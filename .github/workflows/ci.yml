@@ -1,0 +1,51 @@
+name: CI
+on:
+  push:
+    branches: [main, 'dev/**', 'feature/**', 'fix/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Python tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install Python dependencies
+        run: python -m pip install -e "./backend[test]"
+      - name: Run algorithm, API and desktop lifecycle tests
+        run: python -m pytest -q backend/tests
+      - name: Check Python source compilation
+        run: python -m compileall -q backend/src
+
+  desktop:
+    name: Vue / Electron build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --no-frozen-lockfile
+      - name: Build Vue and type-check
+        working-directory: frontend
+        run: pnpm build
+      - name: Check Electron and development supervisor syntax
+        run: |
+          node --check electron/main.cjs
+          node --check electron/preload.cjs
+          node --check scripts/dev-desktop.cjs

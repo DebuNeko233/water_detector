@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+# Node
+node_modules/
+frontend/dist/
+# Runtime / recorded video / calibration
+/data/
+/samples/*.mp4
+/samples/*.avi
+*.log
+*.db
+*.sqlite
+# Editors
+.vscode/
+.idea/
+.DS_Store
