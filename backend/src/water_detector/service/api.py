@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from water_detector.config.manager import ConfigManager
 from water_detector.config.schema import AppConfig, Calibration, DetectorConfig, SourceConfig
 from water_detector.camera.source import open_source
+from water_detector.camera.metadata import probe_file_video
 from water_detector.detector.water import WaterDetector
 from water_detector.render.overlay import render_overlay, jpeg_bytes
 from water_detector.task.monitor import MonitorTask
@@ -98,6 +99,14 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         cfg = manager.active()
         cfg.calibrations[stage] = calibration
         return manager.save(cfg)
+
+    @app.post("/api/camera/metadata")
+    def camera_metadata(req: RefFrameRequest):
+        # FPS, total frames and duration come from Python's video decoder.
+        try:
+            return probe_file_video(req.source)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/camera/frame")
     def camera_frame(req: RefFrameRequest):
