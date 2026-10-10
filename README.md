@@ -14,29 +14,22 @@ cd frontend
 pnpm install
 ```
 
-**之后一条命令即可启动 Electron + Vite + Python：**
+**现在用一条命令启动 Vue + Electron + Python：**
 
 ```powershell
 cd frontend
 pnpm desktop
 ```
 
-启动顺序：Vite 5173 就绪 → Electron 窗口 → Python 后端 8765 就绪 → 加载 Vue。关闭 Electron 会通知由它启动的 Python 正常退出，不会弹出 Python 命令行窗口。
+参照 `sop-platform` 的前后端联动方式，已改为 `vite-plugin-electron` 直接管理开发版 Electron，
+不再依赖独立的 dev-desktop 启动器。Electron 自动启动并在退出时优雅关闭它拥有的 Python；
+不会关闭你手动运行的后端。
 
-如果想独立调试：
+仅调试前端：`cd frontend; pnpm dev:web`。
+仅调试后端：`python -m water_detector.main`。
 
-```powershell
-# 终端 A：只启动 Python
-python -m water_detector.main
-
-# 终端 B：只启动 Vue
-cd frontend
-pnpm dev
-```
-
-可设环境变量 `WAFER_PYTHON` 显式指定 Python，`WAFER_DEBUG_CONSOLE=1` 让开发终端输出后端日志。详见 [`docs/DESKTOP_LIFECYCLE.md`](docs/DESKTOP_LIFECYCLE.md)。
-
-**注意：开发模式的一键启动不等于可分发的 Windows 安装器；生产打包仍需实施和验收。**
+更多信息：[`docs/DESKTOP_LIFECYCLE.md`](docs/DESKTOP_LIFECYCLE.md)。
+正式 Windows 一体化安装包仍需另行打包与验收。
 
 ## 功能范围
 

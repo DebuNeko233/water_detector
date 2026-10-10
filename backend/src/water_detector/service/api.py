@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 from typing import Any
 import cv2
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -16,6 +16,7 @@ from water_detector.camera.source import open_source
 from water_detector.detector.water import WaterDetector
 from water_detector.render.overlay import render_overlay, jpeg_bytes
 from water_detector.task.monitor import MonitorTask
+from water_detector.service.shutdown import ShutdownController, is_authorized
 
 
 class PreviewRequest(BaseModel):
@@ -47,9 +48,10 @@ def read_file_frame(req: RefFrameRequest):
         cap.release()
 
 
-def create_app(manager: ConfigManager | None = None) -> FastAPI:
+def create_app(manager: ConfigManager | None = None, shutdown: ShutdownController | None = None) -> FastAPI:
     manager = manager or ConfigManager()
     monitor = MonitorTask(manager)
+    shutdown = shutdown or ShutdownController()
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
@@ -65,7 +67,17 @@ def create_app(manager: ConfigManager | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "version": "0.1.0"}
+        return {"ok": True, "service": "water_detector", "version": "0.1.0"}
+
+    @app.post("/api/system/process/shutdown", status_code=202)
+    def controlled_shutdown(request: Request, x_wafer_control_token: str | None = Header(default=None)):
+        # Only the actual peer address, never X-Forwarded-For.
+        peer = request.client.host if request.client else None
+        if not is_authorized(peer, x_wafer_control_token, shutdown.token):
+            raise HTTPException(403, "Desktop process control is not authorized")
+        if not shutdown.request():
+            raise HTTPException(503, "Shutdown callback not registered")
+        return {"accepted": True}
 
     @app.get("/api/config/active", response_model=AppConfig)
     def config_get():
