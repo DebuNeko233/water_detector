@@ -1,49 +1,47 @@
-# Electron ↔ Python 生命周期（V0.3）
-本次**仅参考** [sop-platform](https://github.com/DebuNeko233/sop-platform) 的前后端联动方式；
-不复制它的业务、视觉检测或用户界面代码。
+# Electron 与 Python 生命周期（Windows）
 
-## Windows 开发
+## 开发命令
 
-首次安装：
+| 命令 | 功能 |
+|---|---|
+| `cd frontend && pnpm dev` | 只启动 Vite（需单独启动 Python 才能取数据） |
+| `cd backend && python -m water_detector.main` | 只启动后端，`http://127.0.0.1:8765/api/health` 可检查 |
+| `cd frontend && pnpm desktop` | **一键开发运行**：自动启动 Vite → 等待就绪 → Electron → 后端 |
+| `cd frontend && pnpm desktop:electron` | 仅 Electron；适合已经手动启动 Vite 的场合 |
+| `cd frontend && pnpm desktop:dist` | 构建前端，Electron 从 `dist/index.html` 读取文件（仍为开发模式 Python） |
 
-```powershell
-python -m pip install -e "./backend[test]"
-cd frontend
-pnpm install
+**重要：** 上面的 `desktop` 是开发用一键启动，不等于 Windows 已打包安装程序。
+
+## Electron 主进程
+
+- 使用唯一实例锁避免多个窗口争抢后端。
+- 若 `127.0.0.1:8765/api/health` 已提供兼容服务，则只连接、不声明所有权，不会在 Electron 退出时停止别人手动启动的后端。
+- 默认开发后端使用当前虚拟环境 (`VIRTUAL_ENV`)，亦可设置 `WAFER_PYTHON` 指定解释器。
+- Electron 拥有的 Python 使用 `windowsHide: true` 和 `stdio: ['pipe','pipe','pipe']`，不打开额外命令行窗口。
+- 等待后端 `/api/health` 正常后才加载 Vue；失败时显示可读诊断页。
+- Python 使用 `WAFER_DESKTOP_CHILD=1` 启用 stdin 控制协议。Electron 退出先发送 `shutdown\n`；uvicorn 正常结束时停止检测 Worker 并尽量让 CSV、视频写盘收尾；超时后兜底杀进程树。
+- 调试时设置 `WAFER_DEBUG_CONSOLE=1` 可在开发终端查看 Python 日志，Electron `backend-logs` IPC 可读取最近日志。**不主动启动 Python 命令行窗口**。
+
+## 打包运行规划
+
+Windows 发布版：`electron-builder` / NSIS（单个安装程序）中包含 Vue 生产构建和通过 PyInstaller `--console`（Electron 的 `windowsHide: true` 隐藏控制台；保留标准输入用于优雅关闭） 打包的 `wafer-backend.exe`。最终布局须包括：
+
+```
+resources/
+  backend/wafer-backend.exe
+  app.asar  # Electron 源码和 Vue dist
 ```
 
-命令：
-- `cd frontend; pnpm desktop` 或 `pnpm dev`：Vite 自动启动 Electron，Electron 自动启动 Python
-- `cd frontend; pnpm dev:web`：只运行 Vue（可连接手工启动的 Python）
-- `python -m water_detector.main`：只运行 Python（localhost:8765）
-- `cd frontend; pnpm test:electron`：测试进程所有权及关闭策略
-- `cd frontend; pnpm build`：构建 Vue + Electron main/preload
+Electron 发布版加载内置 HTML，启动 `process.resourcesPath/backend/wafer-backend.exe`，用户只启动一个桌面程序而无需安装 Python。**发布构建和安装器尚未在 Windows 实机验收，当前请先使用开发模式。**
 
-## 启动与退出
+## GitHub Actions
 
-Vite 使用 `vite-plugin-electron/simple` 统一管理 Electron 开发启动，解决之前脚本间
-5173 端口启动竞争。Electron 先显示初始化画面，Python 的
-`GET /api/health` 返回 `service: water_detector` 后再加载 Vue。
+`.github/workflows/ci.yml` 对 PR 和推送运行：
+- Linux/Windows：后端 pytest（含无需视频素材的原 main.py 等价算法回归、FastAPI、子进程启动/优雅退出）
+- Windows：pnpm 锁文件安装、Vue TS 构建、Electron 主进程与启动管理语法校验
 
-Electron 只管理**它自己启动的** Python 进程。如果 localhost 8765 上已经是
-water_detector，Electron 只连接，不会停止该独立进程。
+当前 CI 配置已包含在源码包中。只有代码推送到 GitHub 后，Actions 才会运行；本地 pytest 通过不等于 GitHub CI 通过。
 
-Electron 启动 Python 时通过环境变量传入随机 `WAFER_DESKTOP_CONTROL_TOKEN`，
-关闭时向 `POST /api/system/process/shutdown` 发送 `X-Wafer-Control-Token`。
-Python 只接受 loopback 对端和正确令牌，返回 202 后启动 Uvicorn 优雅退出，
-允许视频写入器、CSV 和相机资源正常释放。超时后才杀掉属于自己的 PID 进程树。
+建议从仓库根目录执行 `git add . && git commit -m "fix: supervise Vite Electron Python and enable CI" && git push`，随后到 GitHub Actions 查看实际作业状态。
 
-开发模式默认 `windowsHide: true`，Python 日志写入应用日志并由 Electron 收集；
-设置 `WAFER_DEBUG_CONSOLE=1` 可让开发终端输出诊断信息。
-未来打包的后端可用 PyInstaller `--noconsole`，不再依赖 stdin 管道。
-
-## 发布版本边界
-
-**Windows 安装包尚未制作及验收。** 最终将用 electron-builder 将 `dist`、
-`dist-electron` 与 `wafer-backend.exe` 一起放进单一安装程序，Electron 仍是用户唯一入口。
-本文中的 `pnpm desktop` 是开发版一键启动。
-
-## 验证
-
-GitHub Actions 在 Windows 运行 Python 测试、Node 进程管理测试和 Vue/Electron 构建；
-在 Ubuntu 运行 Python 测试。核心水流 `S_water` 数学公式未修改。
+客户视频不上传公开仓库，保留本地回归测试 `GOOD_VIDEO` / `BAD_VIDEO` 路径支持。

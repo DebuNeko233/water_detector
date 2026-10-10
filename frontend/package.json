@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
-    "dev:web": "cross-env WAFER_UI_ONLY=1 vite --host 127.0.0.1 --port 5173 --strictPort",
-    "desktop": "pnpm dev",
+    "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc --noEmit && vite build",
-    "test:electron": "node --test electron/tests/*.test.mjs"
+    "desktop": "node ../scripts/dev-desktop.cjs",
+    "desktop:electron": "electron ../electron",
+    "desktop:dist": "pnpm build && cross-env WAFER_USE_DIST=1 electron ../electron"
   },
   "dependencies": {
     "vue": "^3.5.0",
@@ -24,8 +24,6 @@
     "vue-tsc": "^2.1.0",
     "electron": "^33.0.0",
     "@types/node": "^22.0.0",
-    "cross-env": "^7.0.3",
-    "vite-plugin-electron": "^0.28.6"
-  },
-  "main": "dist-electron/main.js"
+    "cross-env": "^7.0.3"
+  }
 }

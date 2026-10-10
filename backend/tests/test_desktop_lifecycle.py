@@ -1,4 +1,4 @@
-"""Contract: Electron-owned Python child starts quietly and exits on authenticated HTTP shutdown.
+"""Contract: Electron-owned Python child starts quietly and exits on stdin shutdown.
 
 This is intentionally exercised on Windows runners too. It does not open a GUI.
 """
@@ -27,7 +27,6 @@ def test_backend_is_ready_and_stops_with_electron():
         env.update({
             "WAFER_PORT": str(port),
             "WAFER_DESKTOP_CHILD": "1",
-            "WAFER_DESKTOP_CONTROL_TOKEN": "test-ephemeral-secret",
             "WAFER_DATA_DIR": str(Path(tmp) / "data"),
             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src") + os.pathsep + env.get("PYTHONPATH", ""),
         })
@@ -35,7 +34,7 @@ def test_backend_is_ready_and_stops_with_electron():
         process = subprocess.Popen(
             [sys.executable, "-m", "water_detector.main"],
             cwd=Path(__file__).resolve().parents[1],
-            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, creationflags=flags,
         )
         try:
@@ -52,12 +51,9 @@ def test_backend_is_ready_and_stops_with_electron():
                 except (OSError, ValueError):
                     time.sleep(0.12)
             assert healthy, "embedded backend did not become healthy within 15 seconds"
-            from urllib.request import Request
-            request = Request(
-                f"http://127.0.0.1:{port}/api/system/process/shutdown",
-                data=b"", method="POST", headers={"X-Wafer-Control-Token": "test-ephemeral-secret"})
-            with urlopen(request, timeout=2) as response:
-                assert response.status == 202
+            assert process.stdin is not None
+            process.stdin.write(b"shutdown\n")
+            process.stdin.flush()
             assert process.wait(timeout=10) == 0
         finally:
             if process.poll() is None:

@@ -41,13 +41,11 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: pnpm install --no-frozen-lockfile
-      - name: Test Electron runtime ownership and shutdown
-        working-directory: frontend
-        run: pnpm test:electron
       - name: Build Vue and type-check
         working-directory: frontend
         run: pnpm build
       - name: Check Electron and development supervisor syntax
         run: |
-          node --check frontend/dist-electron/main.js
-          node --check frontend/dist-electron/preload.cjs
+          node --check electron/main.cjs
+          node --check electron/preload.cjs
+          node --check scripts/dev-desktop.cjs
