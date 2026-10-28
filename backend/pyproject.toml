@@ -1,19 +1,23 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "wafer-water-detector"
-version = "0.1.0"
-description = "Wafer rinse optical anomaly detection backend"
+version = "0.2.0"
+description = "Electron-managed wafer rinse inspection with unchanged OpenCV detection"
 requires-python = ">=3.10"
 dependencies = [
-  "numpy>=1.24,<3", "opencv-python>=4.8", "fastapi>=0.110", "uvicorn>=0.27",
-  "pydantic>=2.4", "python-multipart>=0.0.9",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "pydantic>=2.7,<3",
+  "loguru>=0.7,<1",
+  "numpy>=1.24,<3",
+  "opencv-python-headless>=4.8,<5",
+  "python-multipart>=0.0.9",
 ]
-
-[project.optional-dependencies]
-test = ["pytest>=8", "httpx>=0.26"]
-
-[tool.setuptools.packages.find]
-where = ["src"]
+[dependency-groups]
+dev = ["httpx>=0.26", "pytest>=8,<10"]
+[build-system]
+requires = ["hatchling>=1,<2"]
+build-backend = "hatchling.build"
+[tool.hatch.build.targets.wheel]
+packages = ["src/sample_backend", "src/water_detector"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]

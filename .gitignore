@@ -1,20 +1,23 @@
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-*.egg-info/
-# Node
 node_modules/
-frontend/dist/
-# Runtime / recorded video / calibration
+.tools/
+out/
+dist/
+build/
+backend/.venv/
+backend/.pytest_cache/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+*.log
+*.tmp
+*.db
+*.sqlite
+.env
+.idea/
+.vscode/
+.DS_Store
 /data/
 /samples/*.mp4
 /samples/*.avi
-*.log
-*.db
-*.sqlite
-# Editors
-.vscode/
-.idea/
-.DS_Store
+pnpm-lock.yaml
+backend/uv.lock

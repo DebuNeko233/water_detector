@@ -1,0 +1,45 @@
+{
+  "name": "wafer-water-detector",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:combined": "node scripts/dev.mjs --combined",
+    "dev:frontend": "node scripts/ensure-electron.mjs && electron-vite dev",
+    "dev:backend": "node scripts/python.mjs run",
+    "setup": "node scripts/python.mjs setup",
+    "python:use": "node scripts/python.mjs use",
+    "python:info": "node scripts/python.mjs info",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test:backend": "node scripts/python.mjs test",
+    "test:scripts": "node --test scripts/tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "clean": "node scripts/clean.mjs",
+    "electron:setup": "node scripts/ensure-electron.mjs",
+    "dev:ui-only": "node scripts/ui-only.mjs"
+  },
+  "dependencies": {
+    "vue": "^3.5.44",
+    "vue-router": "^4.4.0",
+    "pinia": "^2.2.0",
+    "element-plus": "^2.9.0",
+    "@element-plus/icons-vue": "^2.3.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.3.13"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

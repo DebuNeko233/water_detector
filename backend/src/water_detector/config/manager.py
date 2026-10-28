@@ -9,7 +9,7 @@ from .schema import AppConfig
 
 
 def data_home() -> Path:
-    root = os.environ.get("WAFER_DATA_DIR")
+    root = os.environ.get("WAFER_DATA_DIR") or os.environ.get("APP_DATA_DIR")
     if root:
         return Path(root).expanduser().resolve()
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WaferWaterDetector"
