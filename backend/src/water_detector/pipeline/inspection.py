@@ -20,7 +20,7 @@ class InspectionPipeline:
             det.reset()
         self.last_stage = None
 
-    def process(self, packet: FramePacket) -> tuple[dict, np.ndarray]:
+    def process(self, packet: FramePacket, *, show_roi: bool = True) -> tuple[dict, np.ndarray]:
         if self.cfg.stage_mode == "single":
             stage, conf = self.cfg.selected_stage, 1.0
         else:
@@ -55,4 +55,4 @@ class InspectionPipeline:
                       abnormal_run_s=raw["abnormal_run_s"], timestamp_s=packet.timestamp_s,
                       frame_id=packet.frame_id,
                       history=[round(v, 6) for v in det.score_history])
-        return result, render_overlay(packet.image, calib, self.cfg.detector, raw)
+        return result, render_overlay(packet.image, calib, self.cfg.detector, raw, show_roi=show_roi)
