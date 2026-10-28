@@ -1,19 +1,186 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useSystemStore } from '../stores/system'
 import { request, startMonitor, stopMonitor } from '../api/client'
 import SWaterChart from '../components/SWaterChart.vue'
 
-const emit = defineEmits<{ (event: 'open-settings'): void }>()
+const emit = defineEmits<{ (event: 'open-settings'): void; (event: 'open-debug'): void }>()
 const store = useSystemStore()
 const busy = ref(false)
 const previewImage = ref('')
+
+/** Independent video inspection: never seeks or restarts an active recording task. */
+interface VideoMetadata {
+  frame_count: number
+  last_frame_index: number
+  fps: number
+  duration_seconds: number
+  width: number
+  height: number
+}
+const videoMeta = ref<VideoMetadata | null>(null)
+const metaBusy = ref(false)
+const metaError = ref('')
+const manualPreview = ref(false)
+const fileImage = ref('')
+const fileStatus = ref('尚未测试')
+const fileScore = ref<number | null>(null)
+const fileHistory = ref<number[]>([])
+const fileReason = ref('')
+const testBusy = ref(false)
+const seekFrame = ref(0)
+const selectedFrame = ref(0)
+const testStage = ref<'P1' | 'P2' | 'P3'>('P1')
+let metadataVersion = 0
+let previewVersion = 0
+let workerActive = false
+
+function clampFrame(value: number): number {
+  return Math.max(0, Math.min(videoMeta.value?.last_frame_index ?? 0,
+    Number.isFinite(value) ? Math.round(value) : 0))
+}
+function formatTime(value: number): string {
+  const seconds = Math.max(0, Number.isFinite(value) ? value : 0)
+  const mins = String(Math.floor(seconds / 60) % 60).padStart(2, '0')
+  const secs = String(Math.floor(seconds % 60)).padStart(2, '0')
+  const hours = Math.floor(seconds / 3600)
+  return (hours > 0 ? String(hours) + ':' : '') + mins + ':' + secs + '.' + Math.floor((seconds % 1) * 10)
+}
 let frameTimer: ReturnType<typeof setInterval> | null = null
 let loadingFrame = false
 
 const running = computed(() => ['RUNNING', 'STARTING'].includes(store.monitor.state))
 const source = computed(() => store.config?.source)
+
+const fileSource = computed(() =>
+  store.connected && source.value?.kind === 'file' ? source.value.address.trim() : ''
+)
+const calibration = computed(() => store.config?.calibrations[testStage.value])
+const calibrationMatches = computed(() => !!videoMeta.value && !!calibration.value &&
+  calibration.value.reference_width === videoMeta.value.width &&
+  calibration.value.reference_height === videoMeta.value.height)
+const displayImage = computed(() => fileSource.value && manualPreview.value ? fileImage.value : previewImage.value)
+const displayStatus = computed(() => fileSource.value && manualPreview.value ? fileStatus.value : store.monitor.status)
+const displayScore = computed(() => fileSource.value && manualPreview.value ? fileScore.value : store.monitor.s_water)
+const displayHistory = computed(() => fileSource.value && manualPreview.value ? fileHistory.value : store.monitor.history)
+const displayStage = computed(() => fileSource.value && manualPreview.value ? testStage.value : (store.monitor.stage || '—'))
+const timeLabel = computed(() => formatTime(seekFrame.value / (videoMeta.value?.fps || 30)))
+const totalLabel = computed(() => formatTime(videoMeta.value?.duration_seconds ?? 0))
+
+async function loadFileMetadata(): Promise<void> {
+  const version = ++metadataVersion
+  ++previewVersion
+  videoMeta.value = null
+  fileImage.value = ''
+  fileScore.value = null
+  fileHistory.value = []
+  fileStatus.value = '尚未测试'
+  metaError.value = ''
+  if (!fileSource.value) {
+    manualPreview.value = false
+    return
+  }
+  manualPreview.value = true
+  metaBusy.value = true
+  try {
+    const sourceConfig = { ...store.config!.source }
+    const meta = await request<VideoMetadata>('/api/camera/metadata', 'POST', { source: sourceConfig })
+    if (version !== metadataVersion) return
+    videoMeta.value = meta
+    seekFrame.value = 0
+    selectedFrame.value = 0
+    await testAtFrame(0)
+  } catch (error) {
+    if (version === metadataVersion) metaError.value = '读取视频信息失败：' + String(error)
+  } finally {
+    if (version === metadataVersion) metaBusy.value = false
+  }
+}
+
+// Only one in-flight preview chain; multiple rapid seeks coalesce to the latest
+// target frame. A stale reply must never replace the newly requested picture.
+async function testAtFrame(value: number): Promise<void> {
+  if (!videoMeta.value || !fileSource.value) return
+  const target = clampFrame(value)
+  seekFrame.value = target
+  selectedFrame.value = target
+  manualPreview.value = true
+  ++previewVersion
+  if (workerActive) return
+  workerActive = true
+  testBusy.value = true
+  try {
+    while (videoMeta.value && fileSource.value) {
+      const version = previewVersion
+      const index = selectedFrame.value
+      const src = { ...store.config!.source }
+      const chosen = testStage.value
+      const cal = store.config?.calibrations[chosen]
+      const detector = store.config?.detector
+      fileReason.value = ''
+      try {
+        // Render the requested frame even before calibration is completed.
+        const raw = await request<{ jpeg_base64: string }>('/api/camera/frame', 'POST',
+          { source: src, frame_index: index })
+        if (version !== previewVersion) continue
+        fileImage.value = 'data:image/jpeg;base64,' + raw.jpeg_base64
+        if (!cal) {
+          fileScore.value = null
+          fileHistory.value = []
+          fileStatus.value = '未标定'
+          fileReason.value = '请在「标定与调试」为 ' + chosen + ' 设置晶圆 ROI'
+        } else if (!calibrationMatches.value) {
+          fileScore.value = null
+          fileHistory.value = []
+          fileStatus.value = '标定不匹配'
+          fileReason.value = '标定分辨率与当前视频不一致'
+        } else if (detector) {
+          fileStatus.value = '计算中…'
+          const response = await request<{
+            status: string
+            s_water: number
+            samples: { time_s: number; s_water: number }[]
+            jpeg_base64: string
+          }>('/api/debug/preview', 'POST', {
+            source: src, stage: chosen, calibration: { ...cal },
+            detector: { ...detector }, frame_index: index,
+          })
+          if (version !== previewVersion) continue
+          fileImage.value = 'data:image/jpeg;base64,' + response.jpeg_base64
+          fileStatus.value = response.status
+          fileScore.value = response.s_water
+          fileHistory.value = response.samples.map(item => item.s_water)
+        }
+      } catch (error) {
+        if (version === previewVersion) {
+          fileStatus.value = '预览失败'
+          fileReason.value = String(error)
+        }
+      }
+      if (version === previewVersion) break
+    }
+  } finally {
+    workerActive = false
+    testBusy.value = false
+  }
+}
+function seekTo(value: number | number[]): void {
+  void testAtFrame(Array.isArray(value) ? value[0] : value)
+}
+function stepFrame(delta: number): void {
+  void testAtFrame(selectedFrame.value + delta)
+}
+function showLive(): void {
+  manualPreview.value = false
+}
+watch(fileSource, () => { void loadFileMetadata() }, { immediate: true })
+watch(() => store.config?.selected_stage, value => {
+  if (value) testStage.value = value
+}, { immediate: true })
+function onStageChange(): void {
+  if (videoMeta.value) void testAtFrame(selectedFrame.value)
+}
 const sourceReady = computed(() => {
   if (!store.connected || !source.value) return false
   switch (source.value.kind) {
@@ -38,7 +205,7 @@ const sourceHint = computed(() => {
 })
 const threshold = computed(() => store.config?.detector.s_water_threshold ?? 0.010)
 const statusColor = computed(() =>
-  ({ OK: '#19855a', NG: '#d14a42', PAUSED: '#b37d2e', WARMUP: '#b37d2e' } as Record<string, string>)[store.monitor.status] || '#76879c'
+  ({ OK: '#19855a', NG: '#d14a42', PAUSED: '#b37d2e', WARMUP: '#b37d2e' } as Record<string, string>)[displayStatus.value] || '#76879c'
 )
 
 async function fetchPreview() {
@@ -59,6 +226,8 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (frameTimer) clearInterval(frameTimer)
+  ++metadataVersion
+  ++previewVersion
 })
 
 async function toggle() {
@@ -70,7 +239,10 @@ async function toggle() {
   busy.value = true
   try {
     if (running.value) await stopMonitor()
-    else await startMonitor()
+    else {
+      await startMonitor()
+      manualPreview.value = false
+    }
   } catch (error) {
     // Another window/action could have invalidated the saved source while the
     // request was in flight. Show the operator what to fix, not a stack trace.
