@@ -262,10 +262,38 @@ async function toggle() {
   <div class="monitor-grid">
     <section class="panel video-panel" style="padding:10px">
       <div class="video-area">
-        <img v-if="previewImage" :src="previewImage" alt="Python 后端标注的实时晶圆检测画面" />
+        <img v-if="displayImage" :src="displayImage" alt="晶圆检测画面，视频测试可按帧跳转" />
         <div v-else class="muted" style="padding:24px;text-align:center">
-          {{ sourceReady ? '等待第一帧监测画面' : sourceHint }}
+          {{ fileSource && manualPreview ? (metaBusy ? '正在读取视频…' : metaError || '等待视频画面') : (sourceReady ? '等待第一帧监测画面' : sourceHint) }}
         </div>
+        <span v-if="fileSource && manualPreview" class="video-mode-badge">独立算法测试 · 不改变正式监测任务</span>
+      </div>
+      <div v-if="fileSource" class="monitor-timeline">
+        <div class="timeline-top">
+          <div><strong>视频进度</strong><span class="muted"> · {{ videoMeta ? videoMeta.fps.toFixed(2) + ' FPS / ' + videoMeta.frame_count + ' 帧' : '读取中' }}</span></div>
+          <div class="timeline-time">{{ timeLabel }} <span>/ {{ totalLabel }}</span></div>
+        </div>
+        <el-slider v-model="seekFrame" :min="0" :max="videoMeta?.last_frame_index ?? 0" :step="1"
+          :disabled="!videoMeta || metaBusy" aria-label="本地视频进度条，拖动后跳转到目标帧"
+          :format-tooltip="(v:number) => formatTime(v / (videoMeta?.fps || 30))"
+          @change="seekTo" />
+        <div class="monitor-timeline-actions">
+          <el-button size="small" :disabled="!videoMeta" @click="seekTo(0)">开头</el-button>
+          <el-button size="small" :disabled="!videoMeta" @click="stepFrame(-1)">◀ 上一帧</el-button>
+          <el-button size="small" :disabled="!videoMeta" @click="stepFrame(1)">下一帧 ▶</el-button>
+          <el-button size="small" :disabled="!videoMeta" @click="seekTo(videoMeta?.last_frame_index ?? 0)">结尾</el-button>
+          <el-select v-model="testStage" size="small" class="monitor-stage-select" @change="onStageChange">
+            <el-option label="P1" value="P1" /><el-option label="P2" value="P2" /><el-option label="P3" value="P3" />
+          </el-select>
+          <el-button v-if="running && manualPreview" size="small" @click="showLive">返回实时监测</el-button>
+          <span v-if="testBusy" class="muted">正在计算目标帧的 S_water…</span>
+        </div>
+        <div v-if="metaError || fileReason" class="monitor-file-hint">
+          {{ metaError || fileReason }}
+          <el-button v-if="fileStatus==='未标定' || fileStatus==='标定不匹配'" size="small" link
+            type="primary" @click="emit('open-debug')">去标定</el-button>
+        </div>
+        <p v-else class="muted monitor-file-hint">拖动松开后跳转到任意帧；Python 会独立重算该位置的水流历史，不修改正在运行的检测记录。</p>
       </div>
     </section>
     <aside class="right-rail">
@@ -286,17 +314,17 @@ async function toggle() {
       </section>
       <section class="panel">
         <div class="muted">实时检测状态</div>
-        <div class="large-score" :style="{color:statusColor}">{{ store.monitor.status }}</div>
+        <div class="large-score" :style="{color:statusColor}">{{ displayStatus }}</div>
         <div class="stat-grid">
-          <div class="cell"><span class="muted">S_water</span><strong>{{ (store.monitor.s_water || 0).toFixed(4) }}</strong></div>
+          <div class="cell"><span class="muted">S_water</span><strong>{{ displayScore === null || displayScore === undefined ? '—' : displayScore.toFixed(4) }}</strong></div>
           <div class="cell"><span class="muted">阈值</span><strong>{{ threshold.toFixed(4) }}</strong></div>
-          <div class="cell"><span class="muted">当前工位</span><strong>{{ store.monitor.stage || '—' }}</strong></div>
-          <div class="cell"><span class="muted">异常持续</span><strong>{{ (store.monitor.abnormal_run_s || 0).toFixed(2) }} s</strong></div>
+          <div class="cell"><span class="muted">当前工位</span><strong>{{ displayStage }}</strong></div>
+          <div class="cell"><span class="muted">异常持续</span><strong>{{ fileSource && manualPreview ? '独立预览' : (store.monitor.abnormal_run_s || 0).toFixed(2) + ' s' }}</strong></div>
         </div>
       </section>
       <section class="panel">
-        <div class="panel-title">S_water history <span class="muted">（Python 计算）</span></div>
-        <SWaterChart :values="store.monitor.history || []" :threshold="threshold" />
+        <div class="panel-title">S_water history <span class="muted">（{{ fileSource && manualPreview ? '目标帧局部历史' : '实时监测' }}）</span></div>
+        <SWaterChart :values="displayHistory || []" :threshold="threshold" />
       </section>
       <section class="panel">
         <div class="panel-title">运行信息</div>
@@ -304,7 +332,8 @@ async function toggle() {
           <div class="cell"><span class="muted">任务</span><strong>{{ store.monitor.state }}</strong></div>
           <div class="cell"><span class="muted">处理帧</span><strong>{{ store.monitor.processed_frames || 0 }}</strong></div>
         </div>
-        <p class="hint" v-if="store.monitor.reason">{{ store.monitor.reason }}</p>
+        <p class="hint" v-if="fileSource && manualPreview">当前为独立视频算法测试，正式监测任务不受进度跳转影响。</p>
+        <p class="hint" v-else-if="store.monitor.reason">{{ store.monitor.reason }}</p>
         <p class="hint" v-else>标注视频与 CSV 保存在 Python 用户数据目录下。</p>
       </section>
     </aside>
