@@ -30,7 +30,7 @@ class PlaybackRequest(BaseModel):
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     stage_mode: Literal["single", "auto"] = "single"
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
-    position_references: dict[str, str] = Field(default_factory=dict)
+    position_references: dict[str, list[str]] = Field(default_factory=dict)
     show_algorithm_roi: bool = True
     show_nozzle_mask: bool = False
 
