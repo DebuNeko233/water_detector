@@ -105,6 +105,35 @@ class PositionRecognizer:
             0, 1,
         ))
 
+    def _direct_roi_enclosure(self, lab: np.ndarray, cx: float, cy: float,
+                              radius: float) -> float:
+        """How strongly the pre-defined ROI encloses a bright wafer-like disk.
+
+        Unlike circular-edge fitting, this direct enclosure comparison also
+        works when spray hides the rim. Median luminance of the centre must
+        exceed the surrounding equipment, using a conservative separation.
+        Not a universal wafer/material classifier: dark wafers may be UNKNOWN.
+        """
+        height, width = lab.shape[:2]
+
+        def ring_median(factors: tuple[float, ...]) -> float | None:
+            xs = np.concatenate([
+                np.rint(cx + radius * f * self._cos).astype(np.int32) for f in factors
+            ])
+            ys = np.concatenate([
+                np.rint(cy + radius * f * self._sin).astype(np.int32) for f in factors
+            ])
+            valid = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+            if int(valid.sum()) < 110:
+                return None
+            return float(np.median(lab[ys[valid], xs[valid], 0]))
+
+        inside = ring_median((0.25, 0.38, 0.53, 0.70))
+        outside = ring_median((1.17, 1.30, 1.43))
+        if inside is None or outside is None:
+            return 0.0
+        return float(np.clip((inside - outside) / 160.0, 0.0, 1.0))
+
     def classify(self, frame: np.ndarray) -> tuple[str, float, dict[str, float]]:
         """(stage or UNKNOWN, best combined support, per-stage combined support)."""
         self.last_center = None
@@ -201,6 +230,11 @@ class PositionRecognizer:
                                 best_fit = fit
                                 best_circle = (cx, cy, radius)
 
+            # Compare WHICH ROI contains the actual wafer surface, using
+            # its exact saved circle rather than requiring ROI separation.
+            enclosure = self._direct_roi_enclosure(
+                lab, expected_x, expected_y, expected_r
+            )
             geometric[stage] = best_edge
             material = (
                 self._material_score(lab, texture, *best_circle)
@@ -217,6 +251,7 @@ class PositionRecognizer:
                 "edge": round(best_edge, 4),
                 "material": round(material, 4),
                 "fit": round(best_fit, 4),
+                "enclosure": round(enclosure, 4),
             }
             if best_circle is not None:
                 circles[stage] = best_circle
@@ -230,6 +265,21 @@ class PositionRecognizer:
             or best < 0.28
             or best - scores[runner] < self.min_margin
         ):
+            # Direct ROI occupancy fallback: the bright polished wafer may
+            # fill the centre but have no usable circular rim (first frames,
+            # water spray, partial tool occlusion). Only decide if one saved
+            # circle encloses substantially more of that material than either
+            # alternative. An empty rim alone has near-zero enclosure.
+            enclosed = {
+                stage: feature["enclosure"]
+                for stage, feature in self.last_features.items()
+            }
+            order = sorted(enclosed, key=enclosed.__getitem__, reverse=True)
+            first, second = order[:2]
+            if enclosed[first] >= 0.30 and enclosed[first] - enclosed[second] >= 0.12:
+                # Do not fabricate a measured circle centre from the
+                # calibration when only surface occupancy is available.
+                return first, enclosed[first], enclosed
             return "UNKNOWN", best, scores
 
         cx, cy, radius = circles[leader]
