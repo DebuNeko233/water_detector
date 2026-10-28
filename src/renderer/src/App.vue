@@ -7,7 +7,7 @@ import RecordsView from './views/RecordsView.vue'
 import SettingsView from './views/SettingsView.vue'
 const tab=ref('monitor')
 const store=useSystemStore()
-onMounted(async()=>{try{await store.loadConfig()}catch(e){console.error(e)}store.connect()})
+onMounted(()=>{store.connect()})
 </script>
 <template>
  <div class="app-shell">
