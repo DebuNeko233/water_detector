@@ -17,6 +17,8 @@ class DetectorConfig(BaseModel):
     sector_count: int = Field(24, ge=4, le=180)
     sector_threshold: float = Field(0.05, ge=0.0, le=1.0)
     blur_ksize: int = Field(3, ge=0, le=15)
+    # Exclude the moving cleaning nozzle and its short motion trail from S_water.
+    nozzle_filter_enabled: bool = True
 
     @model_validator(mode="after")
     def validate_geometry(self):
