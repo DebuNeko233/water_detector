@@ -22,14 +22,14 @@ class InspectionPipeline:
 
     def process(self, packet: FramePacket, *, show_roi: bool = True) -> tuple[dict, np.ndarray]:
         if self.cfg.stage_mode == "single":
-            stage, conf = self.cfg.selected_stage, 1.0
+            stage, conf, scores = self.cfg.selected_stage, 1.0, {}
         else:
-            stage, conf, _ = self.recognizer.classify(packet.image)
+            stage, conf, scores = self.recognizer.classify(packet.image)
         calib = self.cfg.calibrations.get(stage)
         if stage == "UNKNOWN" or calib is None:
             self.reset()
             result = dict(status="PAUSED", reason="POSITION_UNKNOWN" if stage == "UNKNOWN" else "CALIBRATION_MISSING",
-                          stage=stage, position_confidence=conf, s_water=0.0, sector_scores=[],
+                          stage=stage, position_confidence=conf, position_scores=scores, s_water=0.0, sector_scores=[],
                           max_sector_idx=-1, abnormal_run_s=0.0, timestamp_s=packet.timestamp_s,
                           frame_id=packet.frame_id, history=[])
             return result, packet.image.copy()
@@ -37,6 +37,7 @@ class InspectionPipeline:
         if (w, h) != (calib.reference_width, calib.reference_height):
             self.reset()
             result = dict(status="PAUSED", reason="RESOLUTION_MISMATCH", stage=stage,
+                          position_confidence=conf, position_scores=scores,
                           s_water=0.0, sector_scores=[], max_sector_idx=-1,
                           abnormal_run_s=0.0, timestamp_s=packet.timestamp_s, frame_id=packet.frame_id,
                           history=[])
@@ -50,7 +51,7 @@ class InspectionPipeline:
             self.detectors[stage] = det
         raw = det.process(packet.image)
         result = dict(status=raw["status"], reason="", stage=stage,
-                      position_confidence=conf, s_water=raw["s_water"],
+                      position_confidence=conf, position_scores=scores, s_water=raw["s_water"],
                       sector_scores=raw["sector_scores"], max_sector_idx=raw["max_sector_idx"],
                       abnormal_run_s=raw["abnormal_run_s"], timestamp_s=packet.timestamp_s,
                       frame_id=packet.frame_id,
