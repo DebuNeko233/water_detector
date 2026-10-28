@@ -48,8 +48,22 @@ class AppConfig(BaseModel):
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
     source: SourceConfig = Field(default_factory=SourceConfig)
-    # Auto selects among three distinct calibrated wafer ROI locations.
+    # Automatic stage selection compares >= 5 saved screenshots per stage.
     stage_mode: Literal["single", "auto"] = "single"
     selected_stage: Literal["P1", "P2", "P3"] = "P1"
-    # Kept to read pre-migration config files. Geometry-based auto ignores it.
-    position_references: dict[str, str] = Field(default_factory=dict)
+    # Per-stage pools of reference screenshots. Older active.json files used
+    # one path per stage; those entries are automatically migrated to lists.
+    position_references: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_legacy_reference_paths(cls, value):
+        if isinstance(value, dict):
+            refs = value.get("position_references")
+            if isinstance(refs, dict):
+                value = dict(value)
+                value["position_references"] = {
+                    stage: [path] if isinstance(path, str) and path else paths
+                    for stage, paths in refs.items()
+                }
+        return value
