@@ -17,9 +17,7 @@ interface PlaybackState {
  stage:'P1'|'P2'|'P3'|'UNKNOWN'
  position_confidence:number
  position_scores:Record<string,number>
- position_features:Record<string,{edge:number;material:number;fit:number;enclosure:number}>
- wafer_center:[number,number]|null
- wafer_radius:number|null
+ position_method:'screenshot'
  recognition_mode:'single'|'auto'
  roi:Calibration|null
  nozzle_excluded_pixels:number
@@ -50,8 +48,7 @@ const autoTestBusy=ref(false)
 const recognizedStage=ref('UNKNOWN')
 const matchScore=ref(0)
 const matchScores=ref<Record<string,number>>({})
-const positionFeatures=ref<Record<string,{edge:number;material:number;fit:number;enclosure:number}>>({})
-const waferCenter=ref<[number,number]|null>(null)
+const capturingReference=ref(false)
 const effectiveRoi=ref<Calibration|null>(null)
 const previewImage=ref('')
 const previewStatus=ref('尚未预览')
@@ -80,18 +77,15 @@ const isVideoFile=computed(()=>draft.value?.source.kind==='file')
 const canPreview=computed(()=>isVideoFile.value && !!draft.value?.source.address && !!videoMeta.value)
 const isPlaying=computed(()=>playbackState.value==='PLAYING'||playbackState.value==='SEEKING')
 const isAuto=computed(()=>draft.value?.stage_mode==='auto')
+const referenceCount=(key:string):number=>draft.value?.position_references[key]?.length ?? 0
 const autoRoiReady=computed(()=>{
  const cfg=draft.value, meta=videoMeta.value
  if(!cfg||!meta)return false
- const rois=['P1','P2','P3'].map(k=>cfg.calibrations[k])
- if(rois.some(r=>!r||r.reference_width!==meta.width||r.reference_height!==meta.height))return false
- // The three wafer ROI circles may overlap substantially; only exact
- // duplicate centre-and-radius definitions make automatic choice ambiguous.
- for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){
-  if(Math.hypot(rois[i].cx-rois[j].cx,rois[i].cy-rois[j].cy)<2 &&
-     Math.abs(rois[i].radius-rois[j].radius)<2)return false
- }
- return true
+ return (['P1','P2','P3'] as const).every(key=>{
+  const roi=cfg.calibrations[key]
+  return roi && roi.reference_width===meta.width &&
+    roi.reference_height===meta.height && referenceCount(key)>=5
+ })
 })
 const roiSummary=computed(()=>{
  const r=effectiveRoi.value
@@ -146,6 +140,7 @@ function playbackRequest(index:number){
   calibrations:{...config.calibrations},
   show_algorithm_roi:showAlgorithmRoi.value,
   show_nozzle_mask:showNozzleMask.value,
+  position_references:{...config.position_references},
  }
 }
 async function pollPlayback():Promise<void>{
@@ -162,8 +157,6 @@ async function pollPlayback():Promise<void>{
   recognizedStage.value=result.stage || 'UNKNOWN'
   matchScore.value=result.position_confidence || 0
   matchScores.value=result.position_scores || {}
-  positionFeatures.value=result.position_features || {}
-  waferCenter.value=result.wafer_center || null
   effectiveRoi.value=result.roi || null
   if(result.jpeg_base64){
    previewImage.value='data:image/jpeg;base64,'+result.jpeg_base64
@@ -277,6 +270,40 @@ function adaptCalibrationToVideo():void{
  old.reference_width=videoMeta.value.width
  old.reference_height=videoMeta.value.height
  schedulePreview()
+}
+async function captureReference():Promise<void>{
+ if(!draft.value || !canPreview.value || capturingReference.value)return
+ if(isPlaying.value){
+  ElMessage.warning('请先暂停视频，再采集当前帧截图')
+  return
+ }
+ const current=draft.value.position_references[stage.value] ?? []
+ const frameToken='_frame_'+String(frameIndex.value).padStart(8,'0')+'_'
+ if(current.some(path=>path.includes(frameToken))){
+  ElMessage.warning('此工位已采集当前帧，请移动视频后再采集')
+  return
+ }
+ capturingReference.value=true
+ try{
+  const result=await request<{stage:string;frame_index:number;path:string}>(
+   '/api/position/reference/capture','POST',
+   {source:{...draft.value.source},frame_index:frameIndex.value,stage:stage.value})
+  if(!active || !draft.value)return
+  const list=draft.value.position_references[result.stage] ?? []
+  draft.value.position_references[result.stage]=[...list,result.path]
+  dirty.value=true
+  ElMessage.success(result.stage+' 已采集 '+referenceCount(result.stage)+' 张参考图')
+  void updatePlayback()
+ }catch(e){ElMessage.error('采集参考图失败：'+String(e))}
+ finally{capturingReference.value=false}
+}
+function removeLastReference():void{
+ if(!draft.value)return
+ const list=draft.value.position_references[stage.value] ?? []
+ if(!list.length)return
+ draft.value.position_references[stage.value]=list.slice(0,-1)
+ dirty.value=true
+ void updatePlayback()
 }
 function onModeChange():void{
  if(draft.value)draft.value.selected_stage=stage.value
@@ -393,27 +420,36 @@ onBeforeUnmount(()=>{
     <p class="hint">关闭「手动标定层」可隐藏全部交互圆环和手柄；还可单独关闭「算法 ROI」边界，只看 Python 识别出的水流异常像素。</p>
     <div class="debug-position-panel">
       <div class="toolbar">
-        <strong>按晶圆位置自动切换 ROI</strong>
+        <strong>参考截图对比 · 自动选择 ROI</strong>
         <el-radio-group v-model="draft.stage_mode" size="small" @change="onModeChange">
           <el-radio-button value="single">手动指定</el-radio-button>
-          <el-radio-button value="auto">按位置选择 P1/P2/P3</el-radio-button>
+          <el-radio-button value="auto">截图对比 P1/P2/P3</el-radio-button>
         </el-radio-group>
       </div>
+      <div class="toolbar">
+        <el-button type="primary" size="small" :loading="capturingReference"
+          :disabled="!canPreview || isPlaying || capturingReference"
+          @click="captureReference">将当前帧添加到 {{stage}} 参考图库</el-button>
+        <el-button size="small" :disabled="referenceCount(stage)===0"
+          @click="removeLastReference">移除 {{stage}} 最后一张</el-button>
+        <span class="muted">先暂停视频，在不同画面采集；每个位置至少 5 张</span>
+      </div>
       <div class="debug-stage-result">
-        <div><span class="muted">实际使用 ROI</span><strong>{{recognizedStage}}</strong></div>
-        <div><span class="muted">材质与边缘综合得分（非概率）</span><strong>{{scoreText}}</strong></div>
-        <div><span class="muted">检测到的晶圆圆心</span><strong>{{waferCenter ? 'X='+waferCenter[0].toFixed(0)+'，Y='+waferCenter[1].toFixed(0) : '无法确定'}}</strong></div>
-        <div><span class="muted">使用的 ROI 坐标</span><strong>{{roiSummary}}</strong></div>
+        <div v-for="key in (['P1','P2','P3'] as const)" :key="key">
+          <span class="muted">{{key}} 参考截图</span>
+          <strong>{{referenceCount(key)}} / 5 张{{referenceCount(key)>=5?' · 已满足':' · 需继续采集'}}</strong>
+        </div>
+        <div><span class="muted">实际使用的 ROI</span><strong>{{recognizedStage}}</strong></div>
+        <div><span class="muted">截图相似度（非概率）</span><strong>{{scoreText}}</strong></div>
+        <div><span class="muted">当前 ROI</span><strong>{{roiSummary}}</strong></div>
         <div><span class="muted">检测状态</span><strong>{{previewStatus}}</strong></div>
         <div><span class="muted">喷头过滤（有效 ROI）</span><strong>{{(nozzleFraction*100).toFixed(1)}}%</strong></div>
       </div>
-      <div v-if="isAuto" class="muted">
-        <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}} / ROI 包含={{(positionFeatures[pos]?.enclosure ?? 0).toFixed(3)}} / 边缘贴合={{(positionFeatures[pos]?.fit ?? 0).toFixed(3)}}</span>
-      </div>
+      <p v-if="isAuto" class="muted">P1={{(matchScores.P1 ?? 0).toFixed(3)}} · P2={{(matchScores.P2 ?? 0).toFixed(3)}} · P3={{(matchScores.P3 ?? 0).toFixed(3)}}</p>
       <el-alert v-if="isAuto && !autoRoiReady"
-        title="请分别设置 P1/P2/P3 的圆心与半径，并确保视频分辨率匹配。三个 ROI 允许重叠，只要不是完全相同的圆。"
+        title="自动选择需要 P1/P2/P3 每个位置至少 5 张参考截图，且 ROI 标定尺寸须与视频一致。未满足条件时返回 UNKNOWN/PAUSED。"
         type="warning" :closable="false" show-icon />
-      <p class="hint">直接比较 P1/P2/P3 哪个预设圆框住晶圆：先检查圆内外晶圆表面材质占据情况，再结合圆形边缘与 ROI 的贴合度。边缘被遮挡时仍可尝试材质包含度判定。三个 ROI 可以重叠，不需要参考照片。材质差异不足、边界被遮挡或多个位置难以区分时返回 UNKNOWN/PAUSED。下方分数均为视觉证据，并非概率；请结合“显示算法 ROI”核对。</p>
+      <p class="hint">在三个位置分别暂停并采集不同时间、喷头位置或水流状态的截图。自动模式将当前画面与每个工位的全部参考图比较，选择相似度最高且与第二名有明显差距的 ROI；相似度过低或无法区分时显示 UNKNOWN。参考图片先加入临时草稿，点击「保存为正式参数」后才能用于正式监测。</p>
     </div>
     <div v-if="isVideoFile" class="video-timeline">
      <div class="timeline-top">
