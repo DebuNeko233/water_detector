@@ -194,3 +194,68 @@ def test_file_playback_rejects_live_sources(tmp_path: Path) -> None:
             "source": {"kind": "usb", "address": "", "device_index": 0},
         })
         assert response.status_code == 400
+
+
+
+def test_live_draft_update_recalculates_paused_frame_without_saving(
+    synthetic_video: Path, tmp_path: Path,
+) -> None:
+    """Unsaved threshold/ROI changes take effect at the same paused frame."""
+    import time
+
+    home = tmp_path / "live-calibration"
+    source = {"kind": "file", "address": str(synthetic_video), "device_index": 0}
+    with TestClient(create_app(ConfigManager(home))) as client:
+        original = client.get("/api/config/active").json()
+        request = {
+            "source": source, "stage": "P1", "frame_index": 12,
+            "calibration": {
+                "cx": 80, "cy": 60, "radius": 34,
+                "reference_width": 160, "reference_height": 120,
+            },
+            "detector": original["detector"],
+        }
+        assert client.post("/api/playback/start", json=request).status_code == 200
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            state = client.get("/api/playback/state").json()
+            if state["frame_index"] >= 12 and state["revision"] > 0:
+                break
+            time.sleep(.02)
+        assert state["frame_index"] >= 12
+        client.post("/api/playback/pause")
+        time.sleep(.15)
+        before = client.get("/api/playback/state").json()
+        assert before["state"] == "PAUSED"
+        paused_frame = before["frame_index"]
+        previous_revision = before["revision"]
+
+        modified = {**request, "frame_index": 0}
+        modified["calibration"] = {**request["calibration"], "radius": 31}
+        modified["detector"] = {**request["detector"], "diff_threshold": 255.0}
+        resp = client.post("/api/playback/update", json=modified)
+        assert resp.status_code == 200, resp.text
+        deadline = time.monotonic() + 6
+        after = None
+        while time.monotonic() < deadline:
+            after = client.get("/api/playback/state").json()
+            if after["revision"] > previous_revision and after["state"] == "PAUSED":
+                break
+            time.sleep(.02)
+        assert after is not None and after["revision"] > previous_revision, after
+        assert after["state"] == "PAUSED"
+        assert after["frame_index"] == paused_frame
+        assert after["jpeg_base64"] is not None
+        assert after["s_water"] == 0.0
+
+        # No client parameter or calibration edit reaches the committed config.
+        assert client.get("/api/config/active").json() == original
+        assert client.get("/api/monitor/status").json()["state"] == "IDLE"
+        assert not (home / "results").exists()
+
+        invalid = client.post("/api/playback/update", json={
+            **modified,
+            "source": {"kind": "usb", "address": "", "device_index": 0},
+        })
+        assert invalid.status_code == 409
+        assert client.get("/api/playback/state").json()["state"] == "PAUSED"
