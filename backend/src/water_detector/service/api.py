@@ -19,6 +19,7 @@ from water_detector.camera.metadata import probe_file_video
 from water_detector.detector.water import WaterDetector
 from water_detector.render.overlay import render_overlay, jpeg_bytes
 from water_detector.task.monitor import MonitorTask
+from water_detector.task.file_playback import FilePlayback, PlaybackRequest
 from water_detector.service.shutdown import ShutdownController, is_authorized
 
 
@@ -28,6 +29,10 @@ class PreviewRequest(BaseModel):
     calibration: Calibration
     detector: DetectorConfig
     frame_index: int = Field(0, ge=0)
+
+
+class PlaybackSeekRequest(BaseModel):
+    frame_index: int = Field(ge=0)
 
 
 class RefFrameRequest(BaseModel):
@@ -54,6 +59,7 @@ def read_file_frame(req: RefFrameRequest):
 def create_app(manager: ConfigManager | None = None, shutdown: ShutdownController | None = None) -> FastAPI:
     manager = manager or ConfigManager()
     monitor = MonitorTask(manager)
+    playback = FilePlayback()
     shutdown = shutdown or ShutdownController()
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -61,11 +67,13 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         monitor.stop()
         # Wait in a worker thread so that WebSocket/HTTP resources can unwind.
         await asyncio.to_thread(monitor.wait_for_exit, 4.0)
+        await asyncio.to_thread(playback.stop)
 
     app = FastAPI(title="Wafer Water Detection API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "null"],
                        allow_methods=["GET", "POST", "PUT"], allow_headers=["Content-Type"])
     app.state.monitor = monitor
+    app.state.playback = playback
     app.state.config_manager = manager
 
     @app.get("/api/health")
@@ -156,6 +164,41 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
                     "jpeg_base64": base64.b64encode(jpeg_bytes(overlay)).decode("ascii")}
         finally:
             cap.release()
+
+    # Local-file playback for interactive algorithm testing. This session is
+    # entirely independent of the production monitor task and its recordings.
+    @app.post("/api/playback/start")
+    def playback_start(req: PlaybackRequest):
+        try:
+            return playback.start(req)
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/playback/seek")
+    def playback_seek(req: PlaybackSeekRequest):
+        try:
+            return playback.seek(req.frame_index)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/playback/pause")
+    def playback_pause():
+        return playback.pause()
+
+    @app.post("/api/playback/resume")
+    def playback_resume():
+        try:
+            return playback.resume()
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/playback/stop")
+    def playback_stop():
+        return playback.stop()
+
+    @app.get("/api/playback/state")
+    def playback_state(after_revision: int = -1):
+        return playback.snapshot(after_revision=after_revision)
 
     @app.post("/api/monitor/start")
     def monitor_start():
