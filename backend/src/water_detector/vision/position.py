@@ -26,7 +26,9 @@ class PositionRecognizer:
         for key in ("P1", "P2", "P3"):
             path = paths.get(key)
             if path and Path(path).is_file():
-                image = cv2.imread(path)
+                # cv2.imread(path) can fail for non-ASCII Windows user/profile paths.
+                # Read raw bytes first, then decode without filesystem encoding assumptions.
+                image = cv2.imdecode(np.frombuffer(Path(path).read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
                 if image is not None:
                     self.reference[key] = edge_descriptor(image)
 
