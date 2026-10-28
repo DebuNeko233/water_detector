@@ -271,8 +271,11 @@ def test_auto_roi_selects_by_wafer_circle_position_without_reference_images(tmp_
     assert writer.isOpened()
     for index in range(36):
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
-        cv2.circle(frame, ((36, 80, 120)[index // 12], 60), 25,
-                   (225, 225, 225), 2, cv2.LINE_AA)
+        # A wafer has an interior material/reflectance distribution distinct
+        # from the equipment background AND a partially visible circular rim.
+        center = ((36, 80, 120)[index // 12], 60)
+        cv2.circle(frame, center, 25, (155, 175, 190), -1, cv2.LINE_AA)
+        cv2.circle(frame, center, 25, (225, 225, 225), 2, cv2.LINE_AA)
         writer.write(frame)
     writer.release()
     source = {"kind": "file", "address": str(file), "device_index": 0}
@@ -346,13 +349,62 @@ def test_position_recognizer_geometry_rejects_blank_and_ambiguous_frames() -> No
     # Identically strong circular rims in multiple calibrated positions are
     # ambiguous, and the algorithm must not report a guessed OK.
     both = blank.copy()
-    cv2.circle(both, (34, 60), 25, (220, 220, 220), 2)
-    cv2.circle(both, (80, 60), 25, (220, 220, 220), 2)
+    for center in ((34, 60), (80, 60)):
+        cv2.circle(both, center, 25, (155, 175, 190), -1)
+        cv2.circle(both, center, 25, (220, 220, 220), 2)
     assert recognizer.classify(both)[0] == "UNKNOWN"
     # Repeatedly calibrated at the same centre is not three distinct positions.
     same = {k: Calibration(cx=80, cy=60, radius=25,
                            reference_width=160, reference_height=120) for k in calibs}
     assert PositionRecognizer(same).classify(both)[0] == "UNKNOWN"
+
+
+def test_material_and_edge_must_both_support_a_wafer() -> None:
+    """Machine circular rim without a different disk material must be UNKNOWN."""
+    from water_detector.vision.position import PositionRecognizer
+    from water_detector.config.schema import Calibration
+
+    calibs = {
+        name: Calibration(cx=x, cy=60, radius=25, reference_width=160,
+                          reference_height=120)
+        for name, x in (("P1", 36), ("P2", 80), ("P3", 120))
+    }
+    recog = PositionRecognizer(calibs)
+    background = np.full((120, 160, 3), 40, dtype=np.uint8)
+    fixture = background.copy()
+    cv2.circle(fixture, (80, 60), 25, (235, 235, 235), 2)
+    assert recog.classify(fixture)[0] == "UNKNOWN"
+    assert recog.last_features["P2"]["edge"] > 0.5
+    assert recog.last_features["P2"]["material"] < recog.min_material
+
+    wafer = background.copy()
+    cv2.circle(wafer, (80, 60), 25, (140, 155, 175), -1, cv2.LINE_AA)
+    cv2.circle(wafer, (80, 60), 25, (235, 235, 235), 2, cv2.LINE_AA)
+    stage, score, values = recog.classify(wafer)
+    assert stage == "P2"
+    assert score > 0.38
+    assert recog.last_features["P2"]["edge"] > recog.min_support
+    assert recog.last_features["P2"]["material"] > recog.min_material
+    assert values["P2"] > values["P1"]
+
+    # A nozzle obscuring a fraction of the wafer should not destroy the
+    # remaining broad circular rim and material evidence.
+    nozzle = wafer.copy()
+    cv2.rectangle(nozzle, (75, 20), (86, 65), (50, 50, 50), -1)
+    assert recog.classify(nozzle)[0] == "P2"
+
+
+def test_position_material_detector_rejects_mismatched_video_resolution() -> None:
+    from water_detector.vision.position import PositionRecognizer
+    from water_detector.config.schema import Calibration
+
+    calibs = {
+        name: Calibration(cx=x, cy=60, radius=25, reference_width=160,
+                          reference_height=120)
+        for name, x in (("P1", 36), ("P2", 80), ("P3", 120))
+    }
+    frame = np.full((120, 200, 3), 80, dtype=np.uint8)
+    assert PositionRecognizer(calibs).classify(frame)[0] == "UNKNOWN"
 
 
 def test_roi_visibility_keeps_water_anomaly_pixels() -> None:
