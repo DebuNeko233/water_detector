@@ -1,7 +1,7 @@
-"""Select P1/P2/P3 by comparing the current frame with three saved screenshots.
+"""Select P1/P2/P3 using five or more saved screenshots per stage.
 
 No material segmentation, circle fitting, rim edge scoring, enclosure heuristic,
-or position guessing. The three full-frame snapshots are captured by the user
+or position guessing. At least five snapshots per stage are captured by the user
 at known P1/P2/P3 positions. Matching compares normalized grayscale thumbnail
 pixels near the union of their calibrated ROIs, excluding an optional moving
 nozzle mask. A missing, incompatible, low-quality, or ambiguous screenshot
@@ -16,12 +16,14 @@ import numpy as np
 
 from water_detector.config.schema import Calibration
 
+MIN_REFERENCES_PER_STAGE = 5
+
 STAGES = ("P1", "P2", "P3")
 THUMB_SIZE = (128, 96)
 
 
 class PositionRecognizer:
-    """Cached screenshot-based recognizer with conservative rejection."""
+    """Cached multi-screenshot recognizer with conservative rejection."""
 
     def __init__(
         self,
@@ -34,21 +36,28 @@ class PositionRecognizer:
         self.calibrations = calibrations or {}
         self.min_similarity = min_similarity
         self.min_margin = min_margin
-        self.reference_images: dict[str, np.ndarray] = {}
-        self.reference_masks: dict[str, np.ndarray] = {}
+        # Load, validate and downsample references ONCE per pipeline, not per
+        # video frame. All 15+ screenshots use one shared image geometry.
+        self.reference_thumbnails: dict[str, list[np.ndarray]] = {}
+        self.reference_shape: tuple[int, int] | None = None
         self.last_scores: dict[str, float] = {}
         for stage in STAGES:
-            path = references.get(stage)
-            if not path:
-                continue
-            try:
-                # Unicode-safe on Windows paths such as Chinese usernames.
-                encoded = np.fromfile(Path(path), dtype=np.uint8)
-                image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-            except (OSError, ValueError, cv2.error):
-                image = None
-            if image is not None:
-                self.reference_images[stage] = image
+            thumbnails: list[np.ndarray] = []
+            for filename in references.get(stage, []):
+                try:
+                    encoded = np.fromfile(Path(filename), dtype=np.uint8)
+                    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                except (OSError, ValueError, cv2.error):
+                    image = None
+                if image is None:
+                    continue
+                shape = image.shape[:2]
+                if self.reference_shape is None:
+                    self.reference_shape = shape
+                if shape != self.reference_shape:
+                    continue
+                thumbnails.append(self._thumbnail(image))
+            self.reference_thumbnails[stage] = thumbnails
 
     @staticmethod
     def _thumbnail(frame: np.ndarray) -> np.ndarray:
@@ -96,11 +105,11 @@ class PositionRecognizer:
         nozzle_mask: np.ndarray | None = None,
     ) -> tuple[str, float, dict[str, float]]:
         self.last_scores = {}
-        if len(self.reference_images) != 3 or frame.ndim != 3:
+        if (frame.ndim != 3 or self.reference_shape != frame.shape[:2] or
+                any(len(self.reference_thumbnails[stage]) < MIN_REFERENCES_PER_STAGE
+                    for stage in STAGES)):
             return "UNKNOWN", 0.0, {}
         shape = frame.shape[:2]
-        if any(image.shape[:2] != shape for image in self.reference_images.values()):
-            return "UNKNOWN", 0.0, {}
         focus = self._focus_mask(shape)
         if focus is None:
             return "UNKNOWN", 0.0, {}
@@ -116,9 +125,13 @@ class PositionRecognizer:
             return "UNKNOWN", 0.0, {}
 
         current = self._thumbnail(frame)
+        # One stage is represented by a pool, not by a single idealized
+        # frame. Best match tolerates changing spray, lighting and nozzle
+        # position; the mask excludes the detected nozzle in the live frame.
         scores = {
             stage: round(
-                self._similarity(current, self._thumbnail(self.reference_images[stage]), focus),
+                max(self._similarity(current, thumb, focus)
+                    for thumb in self.reference_thumbnails[stage]),
                 5,
             )
             for stage in STAGES
