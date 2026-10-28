@@ -27,6 +27,7 @@ const previewStatus=ref('尚未预览')
 const previewScore=ref(0)
 const previewHistory=ref<number[]>([])
 const busy=ref(false)
+const saving=ref(false)
 const dirty=ref(false)
 const draft=ref<AppConfig|null>(null)
 const error=ref('')
@@ -164,7 +165,20 @@ function move(e:PointerEvent){
  dirty.value=true
 }
 function up(){if(pointer.value){pointer.value=null;schedulePreview()}}
-async function save(){if(!draft.value)return;try{const cfg=await commitConfig(draft.value);store.config=cfg;dirty.value=false;ElMessage.success('已保存正式参数')}catch(e){ElMessage.error(String(e))}}
+async function save(){
+ if(!draft.value || saving.value)return
+ saving.value=true
+ try{
+  const cfg=await commitConfig(draft.value)
+  store.config=cfg
+  dirty.value=false
+  ElMessage.success('已保存正式参数')
+ }catch(e){
+  ElMessage.error('保存标定失败：'+String(e))
+ }finally{
+  saving.value=false
+ }
+}
 async function chooseVideo(){
  const file=await window.desktop?.system.selectFile()
  if(file&&draft.value){
@@ -231,7 +245,7 @@ onBeforeUnmount(()=>{
     <div v-for="item in ([['inner_radius_ratio','内半径比例'],['outer_radius_ratio','外半径比例'],['diff_threshold','帧差阈值'],['history_seconds','驻留窗口 / s'],['persistence_threshold','像素驻留阈值'],['s_water_threshold','S_water 阈值'],['ng_hold_seconds','NG 持续时间 / s'],['recover_hold_seconds','恢复时间 / s'],['sector_count','扇区数量'],['sector_threshold','扇区显示阈值'],['blur_ksize','高斯核大小']] as const)" :key="item[0]" class="form-line">
       <span>{{item[1]}}</span><el-input-number v-model="detector[item[0]]" :step="['history_seconds','persistence_threshold','s_water_threshold','ng_hold_seconds','recover_hold_seconds','sector_threshold','inner_radius_ratio','outer_radius_ratio'].includes(item[0])?0.01:1" :precision="['diff_threshold','sector_count','blur_ksize'].includes(item[0])?0:3" @change="schedulePreview"/>
     </div>
-    <div class="footer-actions"><el-button @click="init">放弃修改</el-button><el-button type="primary" :disabled="!dirty" @click="save">保存为正式参数</el-button></div>
+    <div class="footer-actions"><el-button @click="init">放弃修改</el-button><el-button type="primary" :loading="saving" :disabled="!dirty || saving" @click="save">保存为正式参数</el-button></div>
    </section>
   </div>
  </div>
