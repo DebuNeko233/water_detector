@@ -21,7 +21,7 @@ onMounted(()=>{store.connect()})
    <div class="sidebar-footer"><span :class="['dot',{on:store.connected}]"></span>{{store.connected?'后端已连接':'等待 Python 后端'}}<small>检测判定仅在 Python 运行</small></div>
   </aside>
   <div class="main-area"><header class="topbar"><div><strong>{{({monitor:'实时监测',debug:'标定与调试',records:'检测记录',settings:'设备与系统'} as Record<string,string>)[tab]}}</strong><span> / Wafer Water Detector</span></div><span class="version">V0.1 · 开发版本</span></header>
-   <main class="content"><MonitorView v-if="tab==='monitor'"/><DebugView v-else-if="tab==='debug'"/><RecordsView v-else-if="tab==='records'"/><SettingsView v-else/></main>
+   <main class="content"><MonitorView v-if="tab==='monitor'" @open-settings="tab='settings'"/><DebugView v-else-if="tab==='debug'"/><RecordsView v-else-if="tab==='records'"/><SettingsView v-else/></main>
   </div>
  </div>
 </template>
