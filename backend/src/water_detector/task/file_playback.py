@@ -104,6 +104,30 @@ class FilePlayback:
             self._condition.notify_all()
             return self.snapshot()
 
+    def update(self, request: PlaybackRequest) -> dict:
+        """Apply unsaved ROI/threshold changes to the CURRENT file frame.
+
+        Only the local test session is changed; saved configuration and the
+        production monitor remain untouched. The decoder is kept open, while
+        the detector and its temporal history are recreated from pre-roll.
+        Unlike seek(), edits do NOT automatically resume a paused video.
+        """
+        with self._condition:
+            if self._thread is None or not self._thread.is_alive() or self._request is None:
+                raise RuntimeError("No active playback session")
+            if (request.source.kind != "file" or
+                    request.source.address != self._request.source.address):
+                raise ValueError("Cannot change video source during a playback update")
+            current = max(0, self._state.get("frame_index", 0))
+            # Frame position comes from the worker, never the renderer's
+            # potentially stale slider position.
+            self._request = request.model_copy(deep=True)
+            self._pending_seek = current
+            self._generation += 1
+            self._state["state"] = "SEEKING"
+            self._condition.notify_all()
+            return self.snapshot()
+
     def pause(self) -> dict:
         with self._condition:
             if self._thread and self._thread.is_alive() and self._state["state"] != "COMPLETED":
@@ -203,6 +227,17 @@ class FilePlayback:
                     if self._stopping:
                         return
                     if self._pending_seek is not None:
+                        # Parameter edits may replace the request while this
+                        # worker is running; use the newest draft for pre-roll.
+                        request = self._request or request
+                        error = ""
+                        if request.calibration is None:
+                            error = "CALIBRATION_MISSING"
+                        elif (width, height) != (
+                            request.calibration.reference_width,
+                            request.calibration.reference_height,
+                        ):
+                            error = "RESOLUTION_MISMATCH"
                         target = min(max(self._pending_seek, 0), max(0, total - 1))
                         generation = self._generation
                         self._pending_seek = None
