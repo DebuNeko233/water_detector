@@ -10,14 +10,16 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 import cv2
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from water_detector.config.schema import Calibration, DetectorConfig, SourceConfig
-from water_detector.detector.water import WaterDetector
-from water_detector.render.overlay import jpeg_bytes, render_overlay
+from water_detector.config.schema import AppConfig, Calibration, DetectorConfig, SourceConfig
+from water_detector.models.frames import FramePacket
+from water_detector.pipeline.inspection import InspectionPipeline
+from water_detector.render.overlay import jpeg_bytes
 
 
 class PlaybackRequest(BaseModel):
@@ -26,6 +28,10 @@ class PlaybackRequest(BaseModel):
     stage: str = "P1"
     calibration: Calibration | None = None
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
+    stage_mode: Literal["single", "auto"] = "single"
+    calibrations: dict[str, Calibration] = Field(default_factory=dict)
+    position_references: dict[str, str] = Field(default_factory=dict)
+    show_algorithm_roi: bool = True
 
 
 class FilePlayback:
@@ -53,6 +59,8 @@ class FilePlayback:
     def _initial_state() -> dict:
         return {
             "state": "IDLE", "frame_index": -1, "fps": 0.0,
+            "stage": "UNKNOWN", "position_confidence": 0.0,
+            "position_scores": {}, "roi": None, "recognition_mode": "single",
             "status": "IDLE", "s_water": None, "history": [],
             "reason": "", "revision": 0,
         }
@@ -167,21 +175,30 @@ class FilePlayback:
             self._state["revision"] = self._revision
             return self.snapshot()
 
-    def _publish(self, frame, index: int, fps: float, detector: WaterDetector | None,
-                 request: PlaybackRequest, error: str = "") -> None:
-        if detector is None:
-            status = "PAUSED"
-            score = None
-            history: list[float] = []
-            visual = frame
-            reason = error or "CALIBRATION_MISSING"
-        else:
-            result = detector.process(frame)
-            status = result["status"]
-            score = result["s_water"]
-            history = [round(float(v), 6) for v in detector.score_history]
-            reason = ""
-            visual = render_overlay(frame, request.calibration, request.detector, result)
+    @staticmethod
+    def _pipeline_config(request: PlaybackRequest) -> AppConfig:
+        calibrations = dict(request.calibrations)
+        if request.stage_mode == "single" and request.calibration is not None:
+            calibrations[request.stage] = request.calibration
+        return AppConfig(
+            source=request.source, detector=request.detector,
+            stage_mode=request.stage_mode,
+            selected_stage=request.stage if request.stage in ("P1", "P2", "P3") else "P1",
+            calibrations=calibrations,
+            position_references=request.position_references,
+        )
+
+    def _publish(self, frame, index: int, fps: float, pipeline: InspectionPipeline,
+                 request: PlaybackRequest) -> None:
+        packet = FramePacket(index, index / fps, frame, request.source.address, fps)
+        result, visual = pipeline.process(packet, show_roi=request.show_algorithm_roi)
+        stage = result.get("stage", "UNKNOWN")
+        calibration = pipeline.cfg.calibrations.get(stage)
+        roi = None
+        if stage in ("P1", "P2", "P3") and calibration is not None:
+            roi = calibration.model_dump()
+        # Do not report an unobserved area as a normal water score.
+        score = result["s_water"] if result["reason"] == "" else None
         jpg = jpeg_bytes(visual)
         with self._condition:
             if self._stopping or self._pending_seek is not None:
@@ -189,9 +206,14 @@ class FilePlayback:
             self._revision += 1
             self._jpeg = jpg
             self._state.update(
-                frame_index=index, fps=fps, status=status,
-                s_water=score, history=history, reason=reason,
-                revision=self._revision, state="PAUSED" if self._paused else "PLAYING",
+                frame_index=index, fps=fps, status=result["status"],
+                s_water=score, history=result.get("history", []),
+                reason=result.get("reason", ""), revision=self._revision,
+                stage=stage,
+                position_confidence=result.get("position_confidence", 0.0),
+                position_scores=result.get("position_scores", {}),
+                roi=roi, recognition_mode=request.stage_mode,
+                state="PAUSED" if self._paused else "PLAYING",
             )
 
     def _run(self) -> None:
@@ -211,15 +233,7 @@ class FilePlayback:
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            detector = None
-            error = ""
-            if request.calibration is None:
-                error = "CALIBRATION_MISSING"
-            elif (width, height) != (
-                request.calibration.reference_width,
-                request.calibration.reference_height,
-            ):
-                error = "RESOLUTION_MISMATCH"
+            pipeline = InspectionPipeline(self._pipeline_config(request))
 
             next_frame = 0
             while True:
@@ -230,14 +244,6 @@ class FilePlayback:
                         # Parameter edits may replace the request while this
                         # worker is running; use the newest draft for pre-roll.
                         request = self._request or request
-                        error = ""
-                        if request.calibration is None:
-                            error = "CALIBRATION_MISSING"
-                        elif (width, height) != (
-                            request.calibration.reference_width,
-                            request.calibration.reference_height,
-                        ):
-                            error = "RESOLUTION_MISMATCH"
                         target = min(max(self._pending_seek, 0), max(0, total - 1))
                         generation = self._generation
                         self._pending_seek = None
@@ -261,10 +267,7 @@ class FilePlayback:
                     ))
                     start_index = max(0, target - lookback)
                     cap.set(cv2.CAP_PROP_POS_FRAMES, start_index)
-                    detector = (
-                        WaterDetector((height, width), fps, request.calibration, request.detector)
-                        if not error else None
-                    )
+                    pipeline = InspectionPipeline(self._pipeline_config(request))
                     last = None
                     for index in range(start_index, target + 1):
                         with self._condition:
@@ -275,8 +278,9 @@ class FilePlayback:
                         ok, frame = cap.read()
                         if not ok:
                             break
-                        if index < target and detector is not None:
-                            detector.process(frame)
+                        if index < target:
+                            pipeline.process(FramePacket(index, index / fps, frame, request.source.address, fps),
+                                             show_roi=False)
                         last = (index, frame)
                     with self._condition:
                         if self._generation != generation:
@@ -287,7 +291,7 @@ class FilePlayback:
                         self._paused = True
                         continue
                     index, frame = last
-                    self._publish(frame, index, fps, detector, request, error)
+                    self._publish(frame, index, fps, pipeline, request)
                     next_frame = index + 1
                 else:
                     if target >= total:
@@ -304,7 +308,7 @@ class FilePlayback:
                     with self._condition:
                         if self._generation != generation:
                             continue
-                    self._publish(frame, target, fps, detector, request, error)
+                    self._publish(frame, target, fps, pipeline, request)
                     next_frame = target + 1
 
                 # Playback speed is based on *file* fps. If decoding/inspection
