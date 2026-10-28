@@ -160,7 +160,13 @@ export class BackendManager {
         if (exited(child)) throw new Error('Python exited before becoming ready')
         if (fs.existsSync(this.readyFile)) {
           const ready = JSON.parse(fs.readFileSync(this.readyFile, 'utf8')) as ReadyMessage
-          if (ready.pid !== child.pid || ready.session_id !== sessionId ||
+          // Windows .venv/Scripts/python.exe is a redirector: the actual
+          // interpreter can have a different PID while the launcher remains
+          // owned by Electron. Keep strict PID equality for packaged Python.
+          const pidMatches = ready.pid === child.pid ||
+            (!app.isPackaged && process.platform === 'win32' &&
+              Number.isInteger(ready.pid) && ready.pid > 0)
+          if (!pidMatches || ready.session_id !== sessionId ||
               !Number.isInteger(ready.port) || ready.port <= 0 || ready.port > 65535) {
             throw new Error('Invalid Python startup handshake')
           }
