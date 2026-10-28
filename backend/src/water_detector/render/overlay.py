@@ -6,7 +6,9 @@ import numpy as np
 from water_detector.config.schema import Calibration, DetectorConfig
 
 
-def render_overlay(frame: np.ndarray, calib: Calibration, cfg: DetectorConfig, result: dict, *, show_roi: bool = True) -> np.ndarray:
+def render_overlay(frame: np.ndarray, calib: Calibration, cfg: DetectorConfig, result: dict,
+                   *, show_roi: bool = True,
+                   nozzle_mask: np.ndarray | None = None) -> np.ndarray:
     out = frame.copy()
     c = (int(round(calib.cx)), int(round(calib.cy)))
     r_in = int(round(cfg.inner_radius_ratio * calib.radius))
@@ -16,8 +18,15 @@ def render_overlay(frame: np.ndarray, calib: Calibration, cfg: DetectorConfig, r
         tinted = out.copy()
         tinted[persistent] = (55, 40, 255)
         out = cv2.addWeighted(tinted, 0.45, out, 0.55, 0)
+    if nozzle_mask is not None and np.any(nozzle_mask):
+        # Optional visual confirmation of excluded pixels (cyan). These
+        # pixels do not contribute to S_water and are not abnormal water.
+        out[nozzle_mask.astype(bool)] = (
+            0.45 * out[nozzle_mask.astype(bool)] + 0.55 * np.array([255, 205, 40])
+        ).astype(np.uint8)
     if not show_roi:
-        # Keep only actual detected persistent-water pixels, no ROI rings/sectors.
+        # Keep only actual detected persistent-water pixels unless the
+        # operator explicitly requested nozzle exclusion visualization.
         return out
     cv2.circle(out, c, r_in, (255, 180, 0), 2)
     cv2.circle(out, c, r_out, (70, 235, 100), 2)
