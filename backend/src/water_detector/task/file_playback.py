@@ -216,6 +216,7 @@ class FilePlayback:
                         target = next_frame
                         generation = self._generation
 
+                frame_started = time.monotonic()
                 if seeking:
                     # Same lookback semantics as /api/debug/preview, but process
                     # the pre-roll only ONCE on each seek. No stale old history.
@@ -276,7 +277,7 @@ class FilePlayback:
                 # silently skipping intermediate detector frames.
                 with self._condition:
                     if not self._stopping and self._pending_seek is None and not self._paused:
-                        self._condition.wait(timeout=1.0 / fps)
+                        self._condition.wait(timeout=max(0.0, 1.0 / fps - (time.monotonic() - frame_started)))
         except Exception as exc:
             logger.exception("Video playback failed")
             with self._condition:
