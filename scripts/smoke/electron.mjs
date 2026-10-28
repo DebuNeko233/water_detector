@@ -27,7 +27,9 @@ function launch() {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, APP_SMOKE_REPORT: reportPath },
     })
-    child.stdout?.on('data', data => console.log('[electron stdout]', data.toString()))\n    child.stderr?.on('data', data => console.error('[electron stderr]', data.toString()))\n    const timeout = setTimeout(() => {
+    child.stdout?.on('data', data => console.log('[electron stdout]', data.toString()))
+    child.stderr?.on('data', data => console.error('[electron stderr]', data.toString()))
+    const timeout = setTimeout(() => {
       child.kill()
       reject(new Error('Packaged Electron did not exit within 45 seconds'))
     }, 45_000)
