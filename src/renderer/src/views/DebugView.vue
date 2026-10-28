@@ -170,6 +170,21 @@ function schedulePreview(){
  if(timer)clearTimeout(timer)
  timer=setTimeout(()=>{void updatePlayback()},280)
 }
+/** Resize a previously saved circular ROI to the active video dimensions.
+ * The operator can then drag center/radius to refine it.
+ */
+function adaptCalibrationToVideo():void{
+ if(!videoMeta.value||!calib.value)return
+ const old=calib.value
+ const scaleX=videoMeta.value.width/old.reference_width
+ const scaleY=videoMeta.value.height/old.reference_height
+ old.cx=Math.round(old.cx*scaleX)
+ old.cy=Math.round(old.cy*scaleY)
+ old.radius=Math.max(11,Math.round(old.radius*Math.min(scaleX,scaleY)))
+ old.reference_width=videoMeta.value.width
+ old.reference_height=videoMeta.value.height
+ schedulePreview()
+}
 function jumpToFrame(value:number):void{
  if(!canPreview.value)return
  const target=clampFrame(value)
@@ -286,7 +301,7 @@ onBeforeUnmount(()=>{
       </div>
      </div>
      <p class="hint">拖动松开后自动继续播放；修改参数或标定 ROI 后自动重算当前帧的 S_water。暂停时调参不会自动恢复播放。</p>
-     <el-alert v-if="resolutionMismatch" title="当前标定的分辨率与视频不匹配，请重新标定对应工位" type="warning" :closable="false"/>
+     <div v-if="resolutionMismatch" class="toolbar" style="margin-top:8px"><el-alert title="当前标定的分辨率与视频不匹配" type="warning" :closable="false"/><el-button size="small" @click="adaptCalibrationToVideo">按当前视频尺寸缩放 ROI 后微调</el-button></div>
     </div>
     <div v-else class="hint">当前是实时视频源，只有本地视频文件支持拖动跳转。</div>
     <div class="toolbar" style="margin-top:12px"><el-button :loading="busy||metadataBusy" :disabled="!canPreview" @click="updatePlayback">重新计算预览</el-button><el-tag :type="dirty?'warning':'success'">{{dirty?'临时参数（未保存）':'正式配置'}}</el-tag><el-tag type="info">{{playbackState}}</el-tag><span v-if="busy" class="muted">正在按新参数重建检测历史…</span></div>
