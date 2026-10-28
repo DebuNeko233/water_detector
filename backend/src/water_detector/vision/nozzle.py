@@ -1,11 +1,14 @@
-"""Find vertical, moving-tool/nozzle occlusions without frame-to-frame state.
+"""Conservative per-frame segmentation of movable cleaning nozzles.
 
-Black-hat vertical structure detection is used rather than a fixed nozzle
-position, so lateral nozzle motion does not change the geometric ROI rules.
-This returns a CONSERVATIVE candidate mask: it is not a guaranteed object
-segmentation. It is applied only where supported and never alters source video.
+A narrow, mostly vertical dark shaft entering from above the wafer is
+segmented by horizontal black-hat filtering and long-component selection.
+Camera/nozzle movement is accommodated by searching anew on each frame.
+A short temporal hold prevents departing tool edges from becoming water.
+This is an opt-in visualization but an enabled, bounded exclusion in scoring.
 """
 from __future__ import annotations
+
+from collections import deque
 
 import cv2
 import numpy as np
@@ -20,82 +23,70 @@ def nozzle_occlusion_mask(
     empty = np.zeros((height, width), dtype=bool)
     if not calibrations:
         return empty
-    radii = [float(c.radius) for c in calibrations.values()]
-    centers_x = [float(c.cx) for c in calibrations.values()]
-    centers_y = [float(c.cy) for c in calibrations.values()]
-    radius = max(radii)
-    if radius < 15:
-        return empty
-
+    radius = float(np.median([c.radius for c in calibrations.values()]))
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    # A horizontal closing highlights dark, vertically elongated metal tools
-    # even when the arm moves sideways. A circular wafer edge has different
-    # orientation and is not by itself sufficient to form a long component.
-    bar_width = max(21, int(round(min(radius * 0.5, 101)))) | 1
+    bar_width = int(np.clip(radius * 0.60, 31, 85)) | 1
     blackhat = cv2.morphologyEx(
         gray, cv2.MORPH_BLACKHAT,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (bar_width, 3)),
+        cv2.getStructuringElement(cv2.MORPH_RECT, (bar_width, 9)),
     )
-    binary = (blackhat > 22).astype(np.uint8) * 255
-    length = max(20, int(round(radius * 0.32)))
-    binary = cv2.morphologyEx(
-        binary, cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (5, max(11, length // 2))),
+    foreground = np.uint8(blackhat > 16) * 255
+    long_h = max(17, int(radius * 0.28))
+    foreground = cv2.morphologyEx(
+        foreground, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, long_h)),
     )
-    binary = cv2.morphologyEx(
-        binary, cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (3, length)),
-    )
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
-    candidates = []
-    upper = min(centers_y) - 1.25 * radius
-    for label in range(1, count):
-        x, y, w, h, _ = [int(value) for value in stats[label]]
-        if (h < max(length, 65) or h < 1.65 * w or w > 0.48 * radius
-                or x + w < min(centers_x) - 0.85 * radius
-                or x > max(centers_x) + 0.85 * radius
-                or y + h < upper or y > min(centers_y) - 0.1 * radius):
-            continue
-        candidates.append((h * min(w, 25), label))
-    # Limit masking to the two dominant vertical shafts, not the entire
-    # machinery: broad black metal rings must not be mistaken for a nozzle.
-    mask = np.zeros((height, width), dtype=np.uint8)
-    for _, label in sorted(candidates, reverse=True)[:2]:
-        mask[labels == label] = 255
-    dilation = max(5, int(round(radius * 0.09))) | 1
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(foreground)
+    selected: set[int] = set()
+    for calibration in calibrations.values():
+        r = calibration.radius
+        best_index = 0
+        best_area = 0
+        for index in range(1, num):
+            x, y, cw, ch, area = map(int, stats[index])
+            if (area < max(80, int(r * 0.7))
+                    or ch < 0.60 * r or cw > 1.23 * r or ch < 1.2 * cw
+                    or y > calibration.cy - 0.30 * r
+                    or y + ch < calibration.cy - 0.55 * r
+                    or abs(x + cw / 2 - calibration.cx) > 0.82 * r
+                    or x < 0.04 * width or x + cw > 0.96 * width):
+                continue
+            if area > best_area:
+                best_area, best_index = area, index
+        if best_index:
+            selected.add(best_index)
+    if not selected:
+        return empty
+    mask = np.isin(labels, list(selected)).astype(np.uint8) * 255
     mask = cv2.dilate(
-        mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation, dilation)),
+        mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
     )
+    yy, xx = np.ogrid[:height, :width]
+    for c in calibrations.values():
+        rr = np.hypot(xx - c.cx, yy - c.cy)
+        annulus = (rr >= 0.65 * c.radius) & (rr <= 0.95 * c.radius)
+        # Never remove more than 30% of an ROI; fail open instead of
+        # suppressing significant water evidence.
+        if np.count_nonzero(annulus) and float(np.mean(mask[annulus] > 0)) > 0.30:
+            return empty
     return mask > 0
 
 
 class DynamicNozzleFilter:
-    """Frame-local nozzle segmentation with a short temporal exclusion trail.
-
-    The helper is owned by InspectionPipeline and resets whenever inspection
-    state resets or a video is re-seeked. It does not guess a nozzle from ROI
-    location alone. The trailing union excludes only a few recent shaft
-    positions so a moving nozzle's motion cannot become persistent water.
-    """
+    """Short moving exclusion trail plus per-frame nozzle detection."""
 
     def __init__(self, shape_hw: tuple[int, int], fps: float,
                  calibrations: dict[str, Calibration]):
-        from collections import deque
-
         self.shape = shape_hw
-        self.fps = fps
         self.calibrations = calibrations
-        self._recent = deque(maxlen=max(1, min(3, int(round(fps * 0.10)))))
+        self.recent: deque[np.ndarray] = deque(
+            maxlen=max(2, min(5, round(max(fps, 1) * 0.12)))
+        )
 
     def reset(self) -> None:
-        self._recent.clear()
+        self.recent.clear()
 
     def detect(self, frame: np.ndarray) -> np.ndarray:
-        if frame.shape[:2] != self.shape:
-            raise ValueError("Nozzle detection frame size changed")
-        current = nozzle_occlusion_mask(frame, self.calibrations)
-        self._recent.append(current)
-        if len(self._recent) == 1:
-            return current
-        return np.logical_or.reduce(tuple(self._recent))
+        now = nozzle_occlusion_mask(frame, self.calibrations)
+        self.recent.append(now)
+        return np.logical_or.reduce(list(self.recent))
