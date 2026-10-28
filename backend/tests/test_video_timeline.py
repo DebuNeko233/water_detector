@@ -423,3 +423,61 @@ def test_roi_visibility_keeps_water_anomaly_pixels() -> None:
     assert np.count_nonzero(no_roi) > 0  # Persistent anomaly still red.
     assert np.count_nonzero(no_roi[~persistent]) == 0  # No guide rings.
     assert np.count_nonzero(with_roi[~persistent]) > 0
+
+
+def test_overlapping_preset_rois_choose_the_one_that_encloses_wafer() -> None:
+    """Real calibration geometry: adjacent ROIs overlap and MUST be accepted."""
+    from water_detector.vision.position import PositionRecognizer
+    from water_detector.config.schema import Calibration
+
+    rois = {
+        "P1": Calibration(cx=264, cy=456, radius=115,
+                          reference_width=720, reference_height=576),
+        "P2": Calibration(cx=269, cy=410, radius=126,
+                          reference_width=720, reference_height=576),
+        "P3": Calibration(cx=267, cy=391, radius=134,
+                          reference_width=720, reference_height=576),
+    }
+    recognizer = PositionRecognizer(rois)
+    for stage in ("P1", "P2", "P3"):
+        r = rois[stage]
+        frame = np.full((576, 720, 3), (45, 48, 51), np.uint8)
+        cv2.circle(frame, (int(r.cx), int(r.cy)), int(r.radius),
+                   (170, 185, 195), -1, cv2.LINE_AA)
+        cv2.circle(frame, (int(r.cx), int(r.cy)), int(r.radius),
+                   (240, 240, 240), 2, cv2.LINE_AA)
+        found, support, scores = recognizer.classify(frame)
+        assert found == stage, (stage, found, support, scores, recognizer.last_features)
+        assert recognizer.last_features[stage]["fit"] >= .85
+
+    # Two identical ROIs cannot be distinguished by visual evidence.
+    rois["P2"] = rois["P3"]
+    assert PositionRecognizer(rois).classify(frame)[0] == "UNKNOWN"
+
+
+def test_overlapping_rois_do_not_fall_back_to_manual_selected_stage() -> None:
+    """The chosen ROI must be the image-selected ROI, not config.selected_stage."""
+    from water_detector.config.schema import AppConfig, Calibration, SourceConfig
+    from water_detector.models.frames import FramePacket
+    from water_detector.pipeline.inspection import InspectionPipeline
+
+    rois = {
+        "P1": Calibration(cx=264, cy=456, radius=115,
+                          reference_width=720, reference_height=576),
+        "P2": Calibration(cx=269, cy=410, radius=126,
+                          reference_width=720, reference_height=576),
+        "P3": Calibration(cx=267, cy=391, radius=134,
+                          reference_width=720, reference_height=576),
+    }
+    cfg = AppConfig(
+        source=SourceConfig(kind="file", address="example.mp4"),
+        calibrations=rois, stage_mode="auto", selected_stage="P3",
+    )
+    frame = np.full((576, 720, 3), 45, dtype=np.uint8)
+    cv2.circle(frame, (264, 456), 115, (170, 185, 195), -1)
+    cv2.circle(frame, (264, 456), 115, (240, 240, 240), 2)
+    result, _ = InspectionPipeline(cfg).process(
+        FramePacket(0, 0.0, frame, "test", 30.0), show_roi=False
+    )
+    assert result["stage"] == "P1", result
+    assert result["position_features"]["P1"]["fit"] >= .85
