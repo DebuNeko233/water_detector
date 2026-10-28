@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from water_detector.config.schema import Calibration
+from water_detector.vision.nozzle import nozzle_occlusion_mask
 
 
 class PositionRecognizer:
@@ -48,9 +49,11 @@ class PositionRecognizer:
         self.last_center: tuple[float, float] | None = None
         self.last_radius: float | None = None
         self.last_features: dict[str, dict[str, float]] = {}
+        self.last_nozzle_fraction: float = 0.0
 
     def _material_score(self, lab: np.ndarray, texture: np.ndarray,
-                        cx: float, cy: float, radius: float) -> float:
+                        cx: float, cy: float, radius: float,
+                        occluded: np.ndarray | None = None) -> float:
         """Robust colour/reflectance distribution separation across the rim.
 
         Several concentric samples tolerate spray, a nozzle, and highlights.
@@ -68,6 +71,8 @@ class PositionRecognizer:
                 for factor in factors
             ])
             valid = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+            if occluded is not None:
+                valid &= ~occluded[np.clip(ys, 0, height - 1), np.clip(xs, 0, width - 1)]
             return ys[valid], xs[valid]
 
         # Compare wafer SURFACE with the outer equipment, not the thin
@@ -106,7 +111,8 @@ class PositionRecognizer:
         ))
 
     def _direct_roi_enclosure(self, lab: np.ndarray, cx: float, cy: float,
-                              radius: float) -> float:
+                              radius: float,
+                              occluded: np.ndarray | None = None) -> float:
         """Compare HOW MUCH wafer material each SAVED ROI actually encloses.
 
         An adaptive surface threshold is found between the central wafer
@@ -124,9 +130,13 @@ class PositionRecognizer:
         yy, xx = np.ogrid[top:bottom, left:right]
         normalized_radius = np.hypot(xx - cx, yy - cy) / radius
         brightness = lab[top:bottom, left:right, 0]
-        core = brightness[normalized_radius < 0.70]
+        allowed = (
+            ~occluded[top:bottom, left:right] if occluded is not None
+            else np.ones(brightness.shape, dtype=bool)
+        )
+        core = brightness[(normalized_radius < 0.70) & allowed]
         background = brightness[
-            (normalized_radius > 1.18) & (normalized_radius < 1.42)
+            (normalized_radius > 1.18) & (normalized_radius < 1.42) & allowed
         ]
         if min(core.size, background.size) < 100:
             return 0.0
@@ -137,8 +147,10 @@ class PositionRecognizer:
         if center_l - background_l < 12.0:
             return 0.0
         wafer_surface = brightness > 0.5 * (center_l + background_l)
-        inside = normalized_radius < 1.0
-        outside = (normalized_radius > 1.02) & (normalized_radius < 1.42)
+        inside = (normalized_radius < 1.0) & allowed
+        outside = (normalized_radius > 1.02) & (normalized_radius < 1.42) & allowed
+        if min(int(inside.sum()), int(outside.sum())) < 100:
+            return 0.0
         coverage = float(np.mean(wafer_surface[inside]))
         spill = float(np.mean(wafer_surface[outside]))
         # A ROI which cuts the wafer off at its perimeter receives a lower
@@ -150,6 +162,7 @@ class PositionRecognizer:
         self.last_center = None
         self.last_radius = None
         self.last_features = {}
+        self.last_nozzle_fraction = 0.0
         if frame.ndim != 3 or len(self.calibrations) != 3:
             return "UNKNOWN", 0.0, {}
 
@@ -175,6 +188,12 @@ class PositionRecognizer:
             cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             if scale < 1.0 else frame
         )
+        nozzle = nozzle_occlusion_mask(frame, self.calibrations)
+        self.last_nozzle_fraction = round(float(nozzle.mean()), 5)
+        if scale < 1.0:
+            nozzle = cv2.resize(nozzle.astype(np.uint8),
+                                (image.shape[1], image.shape[0]),
+                                interpolation=cv2.INTER_NEAREST).astype(bool)
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         texture = cv2.magnitude(
@@ -211,17 +230,25 @@ class PositionRecognizer:
                             valid = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
                             if valid.mean() < 0.75:
                                 continue
+                            # Exclude only actually occluded angular samples;
+                            # an unseen section is not evidence that the wafer
+                            # has no rim. Do not erase entire image sectors.
+                            valid &= ~nozzle[
+                                np.clip(ys, 0, h - 1), np.clip(xs, 0, w - 1)
+                            ]
+                            if valid.sum() < 72:
+                                continue
                             ring = np.zeros(128, dtype=np.uint8)
                             ring[valid] = edges[ys[valid], xs[valid]] > 0
-                            # A nozzle segment or specular streak alone must
-                            # not count as a circular wafer perimeter.
                             quadrants = sum(
-                                ring[q * 32:(q + 1) * 32].mean() > 0.14
+                                valid[q * 32:(q + 1) * 32].sum() >= 12 and
+                                ring[q * 32:(q + 1) * 32].sum() /
+                                valid[q * 32:(q + 1) * 32].sum() > 0.14
                                 for q in range(4)
                             )
                             if quadrants < 3:
                                 continue
-                            support = float(ring.mean())
+                            support = float(ring.sum() / valid.sum())
                             # Which of the THREE PRESET ROIs actually frames
                             # this wafer? Reward the candidate whose observed
                             # rim agrees with this ROI's centre AND radius.
@@ -244,11 +271,11 @@ class PositionRecognizer:
             # Compare WHICH ROI contains the actual wafer surface, using
             # its exact saved circle rather than requiring ROI separation.
             enclosure = self._direct_roi_enclosure(
-                lab, expected_x, expected_y, expected_r
+                lab, expected_x, expected_y, expected_r, nozzle
             )
             geometric[stage] = best_edge
             material = (
-                self._material_score(lab, texture, *best_circle)
+                self._material_score(lab, texture, *best_circle, nozzle)
                 if best_circle is not None else 0.0
             )
             # A circle with no inside/outside material difference is likely
