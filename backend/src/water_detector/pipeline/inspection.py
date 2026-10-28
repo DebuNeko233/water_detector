@@ -17,11 +17,11 @@ class InspectionPipeline:
         self.recognizer = PositionRecognizer(cfg.calibrations)
         self.nozzle_filter: DynamicNozzleFilter | None = None
 
-    def reset(self):
+    def reset(self, *, preserve_nozzle_history: bool = False):
         for det in self.detectors.values():
             det.reset()
         self.last_stage = None
-        if self.nozzle_filter is not None:
+        if self.nozzle_filter is not None and not preserve_nozzle_history:
             self.nozzle_filter.reset()
 
     def process(self, packet: FramePacket, *, show_roi: bool = True,
@@ -48,7 +48,7 @@ class InspectionPipeline:
         }
         calib = self.cfg.calibrations.get(stage)
         if stage == "UNKNOWN" or calib is None:
-            self.reset()
+            self.reset(preserve_nozzle_history=True)
             result = dict(status="PAUSED", reason="POSITION_UNKNOWN" if stage == "UNKNOWN" else "CALIBRATION_MISSING",
                           stage=stage, position_confidence=conf, position_scores=scores, **position_data, s_water=0.0, sector_scores=[],
                           max_sector_idx=-1, abnormal_run_s=0.0, timestamp_s=packet.timestamp_s,
@@ -56,7 +56,7 @@ class InspectionPipeline:
             return result, packet.image.copy()
         h, w = packet.image.shape[:2]
         if (w, h) != (calib.reference_width, calib.reference_height):
-            self.reset()
+            self.reset(preserve_nozzle_history=True)
             result = dict(status="PAUSED", reason="RESOLUTION_MISMATCH", stage=stage,
                           position_confidence=conf, position_scores=scores, **position_data,
                           s_water=0.0, sector_scores=[], max_sector_idx=-1,
@@ -64,7 +64,7 @@ class InspectionPipeline:
                           history=[])
             return result, packet.image.copy()
         if stage != self.last_stage:
-            self.reset()
+            self.reset(preserve_nozzle_history=True)
             self.last_stage = stage
         det = self.detectors.get(stage)
         if det is None or abs(det.fps - packet.fps) > 0.01:
