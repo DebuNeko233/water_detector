@@ -16,13 +16,14 @@ const combined = process.argv.includes('--combined')
 let uv
 try {
   uv = await ensureUv()
-  if (!fs.existsSync(python)) {
-    console.info('[dev] Setting up Python environment for first run...')
-    const setup = spawnSync(uv, ['sync', '--project', backend, '--group', 'dev'], {
-      cwd: root, stdio: 'inherit', windowsHide: true, shell: false,
-    })
-    if (setup.error || setup.status !== 0) throw new Error('Python setup failed: ' + (setup.error?.message ?? setup.status))
-  }
+  // uv sync is incremental: this also repairs stale .venv environments
+  // left by older repository layouts before Electron attempts to start Python.
+  console.info('[dev] Checking Python dependencies...')
+  const setup = spawnSync(uv, ['sync', '--project', backend, '--group', 'dev'], {
+    cwd: root, stdio: 'inherit', windowsHide: true, shell: false,
+  })
+  if (setup.error || setup.status !== 0) throw new Error('Python setup failed: ' + (setup.error?.message ?? setup.status))
+  if (!fs.existsSync(python)) throw new Error('uv completed but Python executable is missing: ' + python)
 } catch (error) {
   console.error('[dev]', error)
   process.exit(1)
