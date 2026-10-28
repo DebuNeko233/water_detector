@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import uuid
 from contextlib import asynccontextmanager
 import base64
 from pathlib import Path
@@ -34,6 +35,12 @@ class PreviewRequest(BaseModel):
 
 class PlaybackSeekRequest(BaseModel):
     frame_index: int = Field(ge=0)
+
+
+class ReferenceCaptureRequest(BaseModel):
+    source: SourceConfig
+    frame_index: int = Field(ge=0)
+    stage: str
 
 
 class RefFrameRequest(BaseModel):
@@ -130,6 +137,35 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
             return {"width": w, "height": h, "jpeg_base64": base64.b64encode(jpeg_bytes(frame)).decode("ascii")}
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/position/reference/capture")
+    def reference_capture(req: ReferenceCaptureRequest):
+        """Persist a raw source-video screenshot for a single reference pool.
+
+        The API only returns its stored filename; it does NOT change active
+        configuration. User must save the draft to use it for real monitoring.
+        """
+        if req.stage not in ("P1", "P2", "P3"):
+            raise HTTPException(400, "stage must be P1/P2/P3")
+        try:
+            frame = read_file_frame(RefFrameRequest(
+                source=req.source, frame_index=req.frame_index
+            ))
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        directory = manager.home / "position_references" / req.stage
+        directory.mkdir(parents=True, exist_ok=True)
+        ok, encoded = cv2.imencode(".png", frame)
+        if not ok:
+            raise HTTPException(500, "Reference image encode failed")
+        destination = directory / (
+            f"{req.stage}_frame_{req.frame_index:08d}_{uuid.uuid4().hex}.png"
+        )
+        destination.write_bytes(encoded.tobytes())
+        return {
+            "stage": req.stage, "frame_index": req.frame_index,
+            "path": str(destination),
+        }
 
     @app.post("/api/debug/preview")
     def debug_preview(req: PreviewRequest):
