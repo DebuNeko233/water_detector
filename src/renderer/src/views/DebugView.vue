@@ -75,6 +75,12 @@ function init(){
  }
  dirty.value=false
 }
+function discardChanges():void {
+ const priorSource=draft.value?.source.address
+ init()
+ if(priorSource!==draft.value?.source.address)void loadVideoMetadata(true)
+ else void updatePlayback()
+}
 function selectStage(value:'P1'|'P2'|'P3'){
  stage.value=value
  if(draft.value){draft.value.selected_stage=value;dirty.value=true}
@@ -319,7 +325,7 @@ onBeforeUnmount(()=>{
     <div v-for="item in ([['inner_radius_ratio','内半径比例'],['outer_radius_ratio','外半径比例'],['diff_threshold','帧差阈值'],['history_seconds','驻留窗口 / s'],['persistence_threshold','像素驻留阈值'],['s_water_threshold','S_water 阈值'],['ng_hold_seconds','NG 持续时间 / s'],['recover_hold_seconds','恢复时间 / s'],['sector_count','扇区数量'],['sector_threshold','扇区显示阈值'],['blur_ksize','高斯核大小']] as const)" :key="item[0]" class="form-line">
       <span>{{item[1]}}</span><el-input-number v-model="detector[item[0]]" :step="['history_seconds','persistence_threshold','s_water_threshold','ng_hold_seconds','recover_hold_seconds','sector_threshold','inner_radius_ratio','outer_radius_ratio'].includes(item[0])?0.01:1" :precision="['diff_threshold','sector_count','blur_ksize'].includes(item[0])?0:3" @change="schedulePreview"/>
     </div>
-    <div class="footer-actions"><el-button @click="init">放弃修改</el-button><el-button type="primary" :loading="saving" :disabled="!dirty || saving" @click="save">保存为正式参数</el-button></div>
+    <div class="footer-actions"><el-button @click="discardChanges">放弃修改</el-button><el-button type="primary" :loading="saving" :disabled="!dirty || saving" @click="save">保存为正式参数</el-button></div>
    </section>
   </div>
  </div>
