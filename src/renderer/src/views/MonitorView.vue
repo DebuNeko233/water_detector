@@ -184,6 +184,13 @@ watch(() => store.config?.selected_stage, value => {
 function onStageChange(): void {
   if (videoMeta.value) void testAtFrame(selectedFrame.value)
 }
+// While showing the live processed file stream, the seek thumb tracks
+// its actual frame number. Dragging explicitly switches to isolated testing.
+watch(() => store.monitor.frame_id, frameId => {
+  if (fileSource.value && !manualPreview.value && typeof frameId === 'number') {
+    seekFrame.value = clampFrame(frameId)
+  }
+})
 const sourceReady = computed(() => {
   if (!store.connected || !source.value) return false
   switch (source.value.kind) {
@@ -212,7 +219,7 @@ const statusColor = computed(() =>
 )
 
 async function fetchPreview() {
-  if (loadingFrame || !store.connected) return
+  if (loadingFrame || !store.connected || (fileSource.value && manualPreview.value)) return
   loadingFrame = true
   try {
     const data = await request<{ jpeg_base64: string | null }>('/api/monitor/frame')
