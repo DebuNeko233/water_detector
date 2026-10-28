@@ -481,3 +481,29 @@ def test_overlapping_rois_do_not_fall_back_to_manual_selected_stage() -> None:
     )
     assert result["stage"] == "P1", result
     assert result["position_features"]["P1"]["fit"] >= .85
+
+
+def test_overlapping_roi_can_select_surface_when_circular_rim_is_obscured() -> None:
+    """A diffuse wafer surface must still be assignable to the enclosing ROI."""
+    from water_detector.vision.position import PositionRecognizer
+    from water_detector.config.schema import Calibration
+
+    rois = {
+        "P1": Calibration(cx=264, cy=456, radius=115, reference_width=720,
+                          reference_height=576),
+        "P2": Calibration(cx=269, cy=410, radius=126, reference_width=720,
+                          reference_height=576),
+        "P3": Calibration(cx=267, cy=391, radius=134, reference_width=720,
+                          reference_height=576),
+    }
+    frame = np.full((576, 720, 3), 38, dtype=np.uint8)
+    cv2.circle(frame, (267, 391), 124, (225, 225, 225), -1)
+    # Heavy blur weakens the circular rim, as happens under water and spray.
+    frame = cv2.GaussianBlur(frame, (71, 71), 25)
+    recognizer = PositionRecognizer(rois)
+    label, confidence, _ = recognizer.classify(frame)
+    assert label == "P3", (label, confidence, recognizer.last_features)
+    assert recognizer.last_features["P3"]["enclosure"] > 0.3
+
+    empty = np.full_like(frame, 38)
+    assert PositionRecognizer(rois).classify(empty)[0] == "UNKNOWN"
