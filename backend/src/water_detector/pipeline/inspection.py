@@ -14,7 +14,7 @@ class InspectionPipeline:
         self.cfg = cfg.model_copy(deep=True)
         self.detectors: dict[str, WaterDetector] = {}
         self.last_stage = None
-        self.recognizer = PositionRecognizer(cfg.calibrations)
+        self.recognizer = PositionRecognizer(cfg.position_references, cfg.calibrations)
         self.nozzle_filter: DynamicNozzleFilter | None = None
 
     def reset(self, *, preserve_nozzle_history: bool = False):
@@ -34,18 +34,14 @@ class InspectionPipeline:
             nozzle_mask = self.nozzle_filter.detect(packet.image)
         if self.cfg.stage_mode == "single":
             stage, conf, scores = self.cfg.selected_stage, 1.0, {}
-            center, detected_radius = None, None
         else:
-            stage, conf, scores = self.recognizer.classify(packet.image, nozzle_mask=nozzle_mask if nozzle_mask is not None else np.zeros(packet.image.shape[:2], dtype=bool))
-            center = self.recognizer.last_center
-            detected_radius = self.recognizer.last_radius
-        position_data = {
-            "wafer_center": list(center) if center is not None else None,
-            "wafer_radius": detected_radius,
-            "position_features": (
-                dict(self.recognizer.last_features) if self.cfg.stage_mode == "auto" else {}
-            ),
-        }
+            # The exact same three screenshot references drive both live
+            # monitoring and the offline/debug players. No geometry/material
+            # based stage classification is used.
+            stage, conf, scores = self.recognizer.classify(
+                packet.image, nozzle_mask=nozzle_mask
+            )
+        position_data = {"position_method": "screenshot"}
         calib = self.cfg.calibrations.get(stage)
         if stage == "UNKNOWN" or calib is None:
             self.reset(preserve_nozzle_history=True)
