@@ -31,6 +31,9 @@ class InspectionPipeline:
         position_data = {
             "wafer_center": list(center) if center is not None else None,
             "wafer_radius": detected_radius,
+            "position_features": (
+                dict(self.recognizer.last_features) if self.cfg.stage_mode == "auto" else {}
+            ),
         }
         calib = self.cfg.calibrations.get(stage)
         if stage == "UNKNOWN" or calib is None:
