@@ -17,7 +17,7 @@ interface PlaybackState {
  stage:'P1'|'P2'|'P3'|'UNKNOWN'
  position_confidence:number
  position_scores:Record<string,number>
- position_features:Record<string,{edge:number;material:number;fit:number}>
+ position_features:Record<string,{edge:number;material:number;fit:number;enclosure:number}>
  wafer_center:[number,number]|null
  wafer_radius:number|null
  recognition_mode:'single'|'auto'
@@ -35,7 +35,7 @@ const showAlgorithmRoi=ref(true)
 const recognizedStage=ref('UNKNOWN')
 const matchScore=ref(0)
 const matchScores=ref<Record<string,number>>({})
-const positionFeatures=ref<Record<string,{edge:number;material:number;fit:number}>>({})
+const positionFeatures=ref<Record<string,{edge:number;material:number;fit:number;enclosure:number}>>({})
 const waferCenter=ref<[number,number]|null>(null)
 const effectiveRoi=ref<Calibration|null>(null)
 const previewImage=ref('')
@@ -355,12 +355,12 @@ onBeforeUnmount(()=>{
         <div><span class="muted">检测状态</span><strong>{{previewStatus}}</strong></div>
       </div>
       <div v-if="isAuto" class="muted">
-        <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}} / 匹配 ROI={{(positionFeatures[pos]?.fit ?? 0).toFixed(3)}}</span>
+        <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}} / ROI 包含={{(positionFeatures[pos]?.enclosure ?? 0).toFixed(3)}} / 边缘贴合={{(positionFeatures[pos]?.fit ?? 0).toFixed(3)}}</span>
       </div>
       <el-alert v-if="isAuto && !autoRoiReady"
         title="请分别设置 P1/P2/P3 的圆心与半径，并确保视频分辨率匹配。三个 ROI 允许重叠，只要不是完全相同的圆。"
         type="warning" :closable="false" show-icon />
-      <p class="hint">直接比较 P1/P2/P3 三个预设圆是否框住晶圆：综合晶圆边缘与 ROI 圆心/半径贴合度、圆内外材质差异。三个 ROI 可以重叠，不需要参考照片。材质差异不足、边界被遮挡或多个位置难以区分时返回 UNKNOWN/PAUSED。下方分数均为视觉证据，并非概率；请结合“显示算法 ROI”核对。</p>
+      <p class="hint">直接比较 P1/P2/P3 哪个预设圆框住晶圆：先检查圆内外晶圆表面材质占据情况，再结合圆形边缘与 ROI 的贴合度。边缘被遮挡时仍可尝试材质包含度判定。三个 ROI 可以重叠，不需要参考照片。材质差异不足、边界被遮挡或多个位置难以区分时返回 UNKNOWN/PAUSED。下方分数均为视觉证据，并非概率；请结合“显示算法 ROI”核对。</p>
     </div>
     <div v-if="isVideoFile" class="video-timeline">
      <div class="timeline-top">
