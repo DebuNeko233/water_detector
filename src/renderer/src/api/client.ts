@@ -12,7 +12,7 @@ export interface SourceConfig {kind:'file'|'usb'|'rtsp'|'industrial'; address:st
 export interface AppConfig {
   version:number; detector:DetectorConfig; calibrations:Record<string,Calibration>
   source:SourceConfig; stage_mode:'single'|'auto'; selected_stage:'P1'|'P2'|'P3'
-  position_references:Record<string,string>
+  position_references:Record<string,string[]>
 }
 export interface MonitorState {
   state:string; status:string; task_id?:string; stage?:string; s_water?:number
