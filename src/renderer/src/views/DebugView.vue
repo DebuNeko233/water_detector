@@ -22,6 +22,17 @@ interface PlaybackState {
  wafer_radius:number|null
  recognition_mode:'single'|'auto'
  roi:Calibration|null
+ nozzle_excluded_pixels:number
+ nozzle_excluded_fraction:number
+}
+interface AutoTestState {
+ state:'IDLE'|'STARTING'|'RUNNING'|'STOPPED'|'COMPLETED'|'ERROR'
+ processed_frames:number; total_frames:number; progress:number; fps:number
+ stage_counts:Record<string,number>; status_counts:Record<string,number>
+ ng_frames:number; max_s_water:number
+ nozzle_excluded_frames:number; average_nozzle_excluded_fraction:number
+ events:Array<{frame_index:number;time_s:number;stage:string;status:string;s_water:number}>
+ error:string
 }
 const frameIndex=ref(0)
 const seekFrame=ref(0)
@@ -32,6 +43,10 @@ const playbackState=ref<PlaybackState['state']>('IDLE')
 const isScrubbing=ref(false)
 const showCalibrationEditor=ref(false)
 const showAlgorithmRoi=ref(true)
+const showNozzleMask=ref(false)
+const nozzleFraction=ref(0)
+const autoReport=ref<AutoTestState|null>(null)
+const autoTestBusy=ref(false)
 const recognizedStage=ref('UNKNOWN')
 const matchScore=ref(0)
 const matchScores=ref<Record<string,number>>({})
@@ -51,6 +66,8 @@ const pointer=ref<'center'|'radius'|null>(null)
 const svg=ref<SVGSVGElement|null>(null)
 let timer:ReturnType<typeof setTimeout>|null=null
 let pollTimer:ReturnType<typeof setInterval>|null=null
+let autoTestTimer:ReturnType<typeof setInterval>|null=null
+let autoPollBusy=false
 let metadataVersion=0
 let previewRevision=-1
 let pollBusy=false
@@ -128,6 +145,7 @@ function playbackRequest(index:number){
   stage_mode:config.stage_mode,
   calibrations:{...config.calibrations},
   show_algorithm_roi:showAlgorithmRoi.value,
+  show_nozzle_mask:showNozzleMask.value,
  }
 }
 async function pollPlayback():Promise<void>{
@@ -140,6 +158,7 @@ async function pollPlayback():Promise<void>{
   previewStatus.value=result.status
   previewScore.value=result.s_water
   previewHistory.value=result.history
+  nozzleFraction.value=result.nozzle_excluded_fraction || 0
   recognizedStage.value=result.stage || 'UNKNOWN'
   matchScore.value=result.position_confidence || 0
   matchScores.value=result.position_scores || {}
@@ -158,6 +177,31 @@ async function pollPlayback():Promise<void>{
   }
  }catch(e){if(active)error.value='视频播放状态获取失败：'+String(e)}
  finally{pollBusy=false}
+}
+async function pollAutoTest():Promise<void>{
+ if(!active||autoPollBusy||!autoReport.value)return
+ autoPollBusy=true
+ try{
+  autoReport.value=await request<AutoTestState>('/api/debug/auto-test/status')
+ }catch(e){
+  if(active)autoReport.value={...autoReport.value,state:'ERROR',error:String(e)}
+ }finally{autoPollBusy=false}
+}
+async function startAutoTest():Promise<void>{
+ if(!canPreview.value||autoTestBusy.value)return
+ autoTestBusy.value=true
+ try{
+  const result=await request<AutoTestState>('/api/debug/auto-test/start','POST',playbackRequest(0))
+  autoReport.value=result
+ }catch(e){ElMessage.error('全视频自动测试启动失败：'+String(e))}
+ finally{autoTestBusy.value=false}
+}
+async function stopAutoTest():Promise<void>{
+ if(autoTestBusy.value)return
+ autoTestBusy.value=true
+ try{autoReport.value=await request<AutoTestState>('/api/debug/auto-test/stop','POST')}
+ catch(e){ElMessage.error('停止全视频测试失败：'+String(e))}
+ finally{autoTestBusy.value=false}
 }
 async function startPlayback(index:number):Promise<void>{
  if(!canPreview.value)return
@@ -270,7 +314,10 @@ async function togglePlayback():Promise<void>{
  finally{playbackBusy.value=false}
 }
 watch(()=>store.config,()=>{init();void loadVideoMetadata(false)},{immediate:true})
-onMounted(()=>{pollTimer=setInterval(()=>{void pollPlayback()},120)})
+onMounted(()=>{
+ pollTimer=setInterval(()=>{void pollPlayback()},120)
+ autoTestTimer=setInterval(()=>{void pollAutoTest()},450)
+})
 function pointInSource(e:PointerEvent){
  if(!svg.value||!calib.value)return null
  const rect=svg.value.getBoundingClientRect()
@@ -319,9 +366,12 @@ onBeforeUnmount(()=>{
  active=false
  if(timer)clearTimeout(timer)
  if(pollTimer)clearInterval(pollTimer)
+ if(autoTestTimer)clearInterval(autoTestTimer)
  metadataVersion++
  updateVersion++
  if(isVideoFile.value)void request('/api/playback/stop','POST').catch(()=>{})
+ if(autoReport.value?.state==='RUNNING'||autoReport.value?.state==='STARTING')
+  void request('/api/debug/auto-test/stop','POST').catch(()=>{})
 })
 </script>
 <template>
@@ -330,7 +380,9 @@ onBeforeUnmount(()=>{
    <section class="panel"><div class="panel-title">视频播放与算法测试</div><div class="toolbar"><div class="stage-tabs"><button v-for="s in (['P1','P2','P3'] as const)" :key="s" :class="{active:stage===s}" @click="selectStage(s)">{{s}}</button></div><el-switch v-model="showCalibrationEditor" active-text="显示手动标定层" inactive-text="隐藏手动标定层"
       aria-label="显示或隐藏所有手动标定圆环和拖动手柄"/>
     <el-switch v-model="showAlgorithmRoi" active-text="显示算法 ROI" inactive-text="只看异常区域"
-      aria-label="显示或隐藏算法实际使用的 ROI 边界" @change="toggleAlgorithmRoi"/><el-button @click="chooseVideo">选择视频</el-button></div>
+      aria-label="显示或隐藏算法实际使用的 ROI 边界" @change="toggleAlgorithmRoi"/>
+    <el-switch v-model="showNozzleMask" active-text="显示喷头过滤区域" inactive-text="隐藏喷头遮罩"
+      aria-label="显示或隐藏被排除的动态喷头像素" @change="toggleAlgorithmRoi"/><el-button @click="chooseVideo">选择视频</el-button></div>
     <svg ref="svg" class="roi-view" :viewBox="`0 0 ${videoMeta?.width ?? calib.reference_width} ${videoMeta?.height ?? calib.reference_height}`" preserveAspectRatio="xMidYMid meet" @pointermove="move" @pointerup="up" @pointercancel="up">
       <image v-if="previewImage" :href="previewImage" x="0" y="0" :width="videoMeta?.width ?? calib.reference_width" :height="videoMeta?.height ?? calib.reference_height" preserveAspectRatio="none"/>
       <circle v-if="showCalibrationEditor" :cx="calib.cx" :cy="calib.cy" :r="calib.radius*detector.outer_radius_ratio" fill="none" stroke="#45e0a2" :stroke-width="Math.max(1.5,calib.reference_width/360)"/>
@@ -353,6 +405,7 @@ onBeforeUnmount(()=>{
         <div><span class="muted">检测到的晶圆圆心</span><strong>{{waferCenter ? 'X='+waferCenter[0].toFixed(0)+'，Y='+waferCenter[1].toFixed(0) : '无法确定'}}</strong></div>
         <div><span class="muted">使用的 ROI 坐标</span><strong>{{roiSummary}}</strong></div>
         <div><span class="muted">检测状态</span><strong>{{previewStatus}}</strong></div>
+        <div><span class="muted">喷头过滤（有效 ROI）</span><strong>{{(nozzleFraction*100).toFixed(1)}}%</strong></div>
       </div>
       <div v-if="isAuto" class="muted">
         <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}} / ROI 包含={{(positionFeatures[pos]?.enclosure ?? 0).toFixed(3)}} / 边缘贴合={{(positionFeatures[pos]?.fit ?? 0).toFixed(3)}}</span>
@@ -387,6 +440,29 @@ onBeforeUnmount(()=>{
      <div v-if="resolutionMismatch" class="toolbar" style="margin-top:8px"><el-alert title="当前标定的分辨率与视频不匹配" type="warning" :closable="false"/><el-button size="small" @click="adaptCalibrationToVideo">按当前视频尺寸缩放 ROI 后微调</el-button></div>
     </div>
     <div v-else class="hint">当前是实时视频源，只有本地视频文件支持拖动跳转。</div>
+    <section class="debug-auto-test">
+      <div class="toolbar">
+        <strong>全视频自动算法测试</strong>
+        <el-button size="small" type="primary"
+          :disabled="!canPreview || autoTestBusy || autoReport?.state==='RUNNING' || autoReport?.state==='STARTING'"
+          :loading="autoTestBusy" @click="startAutoTest">从头自动测试整段视频</el-button>
+        <el-button v-if="autoReport?.state==='RUNNING'||autoReport?.state==='STARTING'"
+          size="small" type="warning" :disabled="autoTestBusy" @click="stopAutoTest">停止测试</el-button>
+        <el-tag v-if="autoReport" type="info">{{autoReport.state}}</el-tag>
+      </div>
+      <template v-if="autoReport">
+        <el-progress :percentage="Math.round(100 * autoReport.progress)" :stroke-width="10"/>
+        <div class="debug-stage-result">
+          <div><span class="muted">已处理帧数</span><strong>{{autoReport.processed_frames}} / {{autoReport.total_frames}}</strong></div>
+          <div><span class="muted">自动 ROI</span><strong>P1 {{autoReport.stage_counts.P1||0}} · P2 {{autoReport.stage_counts.P2||0}} · P3 {{autoReport.stage_counts.P3||0}} · UNKNOWN {{autoReport.stage_counts.UNKNOWN||0}}</strong></div>
+          <div><span class="muted">算法判定</span><strong>OK {{autoReport.status_counts.OK||0}} · NG {{autoReport.ng_frames}} · PAUSED {{autoReport.status_counts.PAUSED||0}}</strong></div>
+          <div><span class="muted">喷头过滤</span><strong>{{autoReport.nozzle_excluded_frames}} 帧，平均有效 ROI 排除 {{(100*autoReport.average_nozzle_excluded_fraction).toFixed(1)}}%</strong></div>
+          <div><span class="muted">最高 S_water</span><strong>{{autoReport.max_s_water.toFixed(4)}}</strong></div>
+        </div>
+        <el-alert v-if="autoReport.error" :title="autoReport.error" type="error" :closable="false"/>
+        <p class="hint">后台独立逐帧测试，不修改正式监测或视频播放进度；测试使用点击开始时的临时 ROI、判定阈值和喷头过滤设置。可随时停止。</p>
+      </template>
+    </section>
     <div class="toolbar" style="margin-top:12px"><el-button :loading="busy||metadataBusy" :disabled="!canPreview" @click="updatePlayback">重新计算预览</el-button><el-tag :type="dirty?'warning':'success'">{{dirty?'临时参数（未保存）':'正式配置'}}</el-tag><el-tag type="info">{{playbackState}}</el-tag><span v-if="busy" class="muted">正在按新参数重建检测历史…</span></div>
     <el-alert v-if="error" :title="error" type="warning" show-icon :closable="false"/>
    </section>
@@ -399,6 +475,7 @@ onBeforeUnmount(()=>{
     <div class="form-line"><span>半径 R</span><el-input-number v-model="calib.radius" :min="11" @change="schedulePreview"/></div>
    </section>
    <section class="panel"><div class="panel-title">水流判定参数（继承 main.py）</div>
+    <div class="form-line"><span>动态喷头过滤</span><el-switch v-model="detector.nozzle_filter_enabled" @change="schedulePreview"/></div>
     <div v-for="item in ([['inner_radius_ratio','内半径比例'],['outer_radius_ratio','外半径比例'],['diff_threshold','帧差阈值'],['history_seconds','驻留窗口 / s'],['persistence_threshold','像素驻留阈值'],['s_water_threshold','S_water 阈值'],['ng_hold_seconds','NG 持续时间 / s'],['recover_hold_seconds','恢复时间 / s'],['sector_count','扇区数量'],['sector_threshold','扇区显示阈值'],['blur_ksize','高斯核大小']] as const)" :key="item[0]" class="form-line">
       <span>{{item[1]}}</span><el-input-number v-model="detector[item[0]]" :step="['history_seconds','persistence_threshold','s_water_threshold','ng_hold_seconds','recover_hold_seconds','sector_threshold','inner_radius_ratio','outer_radius_ratio'].includes(item[0])?0.01:1" :precision="['diff_threshold','sector_count','blur_ksize'].includes(item[0])?0:3" @change="schedulePreview"/>
     </div>
