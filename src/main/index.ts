@@ -185,6 +185,28 @@ app.on('before-quit', (event) => {
  * CI runs this after bundling, so it catches missing resources and startup bugs
  * that testing python.exe alone cannot catch.
  */
+/** Test real Electron ownership of the DEVELOPMENT virtualenv Python. */
+async function runDevelopmentSmokeTest(): Promise<void> {
+  let code = 1
+  try {
+    if (app.isPackaged) throw new Error('Requires development Electron')
+    await backend.start()
+    if (backend.status !== 'ready' || !backend.ownedPid) {
+      throw new Error('Electron did not start its own development Python')
+    }
+    const health = await backend.request('GET', '/api/health') as { ok: boolean }
+    const config = await backend.request('GET', '/api/config/active') as { detector?: object }
+    if (!health.ok || !config.detector) throw new Error('Python wafer API is unavailable')
+    console.info('Development Electron-managed Python smoke passed')
+    code = 0
+  } catch (error) {
+    console.error('Development Electron-managed Python smoke failed:', error)
+  } finally {
+    await backend.stop()
+    app.exit(code)
+  }
+}
+
 async function runPackagedSmokeTest(): Promise<void> {
   let exitCode = 1
   let pythonPid: number | null = null
@@ -253,6 +275,10 @@ async function runParentExitSmokeTest(): Promise<void> {
 app.whenReady().then(() => {
   if (!app.hasSingleInstanceLock()) return
   installLogging()
+  if (process.argv.includes('--smoke-dev')) {
+    void runDevelopmentSmokeTest()
+    return
+  }
   if (process.argv.includes('--smoke-parent-exit')) {
     void runParentExitSmokeTest()
     return
