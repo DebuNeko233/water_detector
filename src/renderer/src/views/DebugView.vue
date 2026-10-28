@@ -1,30 +1,31 @@
 <script setup lang="ts">
-import {computed,onBeforeUnmount,ref,watch} from 'vue'
+import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue'
 import {ElMessage} from 'element-plus'
 import SWaterChart from '../components/SWaterChart.vue'
 import {request,commitConfig,type AppConfig,type Calibration} from '../api/client'
 import {useSystemStore} from '../stores/system'
 const store=useSystemStore()
 const stage=ref<'P1'|'P2'|'P3'>('P1')
-const frameIndex=ref(30)
-const seekFrame=ref(30)
+/** Video algorithm testing is isolated from the official monitoring task. */
 interface VideoMetadata {
-  frame_count:number
-  last_frame_index:number
-  fps:number
-  duration_seconds:number
-  width:number
-  height:number
+ frame_count:number;last_frame_index:number;fps:number;duration_seconds:number;width:number;height:number
 }
+interface PlaybackState {
+ state:'IDLE'|'SEEKING'|'PLAYING'|'PAUSED'|'COMPLETED'|'ERROR'
+ frame_index:number;fps:number;status:string;s_water:number|null
+ history:number[];reason:string;revision:number;jpeg_base64:string|null
+}
+const frameIndex=ref(0)
+const seekFrame=ref(0)
 const videoMeta=ref<VideoMetadata|null>(null)
 const metadataBusy=ref(false)
-let metadataVersion=0
-let previewVersion=0
-let previewWorkerActive=false
+const playbackBusy=ref(false)
+const playbackState=ref<PlaybackState['state']>('IDLE')
+const isScrubbing=ref(false)
+const showHandles=ref(true)
 const previewImage=ref('')
-const rawImage=ref('')
 const previewStatus=ref('尚未预览')
-const previewScore=ref(0)
+const previewScore=ref<number|null>(null)
 const previewHistory=ref<number[]>([])
 const busy=ref(false)
 const saving=ref(false)
@@ -34,116 +35,170 @@ const error=ref('')
 const pointer=ref<'center'|'radius'|null>(null)
 const svg=ref<SVGSVGElement|null>(null)
 let timer:ReturnType<typeof setTimeout>|null=null
+let pollTimer:ReturnType<typeof setInterval>|null=null
+let metadataVersion=0
+let previewRevision=-1
+let pollBusy=false
+let updateBusy=false
+let updateVersion=0
+let active=true
 const calib=computed(()=>draft.value?.calibrations[stage.value])
 const detector=computed(()=>draft.value?.detector)
 const isVideoFile=computed(()=>draft.value?.source.kind==='file')
-const canPreview=computed(()=>isVideoFile.value && !!draft.value?.source.address && !!calib.value && !!videoMeta.value)
+const canPreview=computed(()=>isVideoFile.value && !!draft.value?.source.address && !!videoMeta.value)
+const isPlaying=computed(()=>playbackState.value==='PLAYING'||playbackState.value==='SEEKING')
 const maxFrame=computed(()=>videoMeta.value?.last_frame_index ?? 0)
-function formatTime(value:number):string {
+const resolutionMismatch=computed(()=>!!(videoMeta.value&&calib.value&&
+ (calib.value.reference_width!==videoMeta.value.width||calib.value.reference_height!==videoMeta.value.height)))
+function formatTime(value:number):string{
  const seconds=Number.isFinite(value)?Math.max(0,value):0
  const h=Math.floor(seconds/3600)
  const m=String(Math.floor(seconds/60)%60).padStart(2,'0')
- const s=String(Math.floor(seconds%60)).padStart(2,'0')
- const tenth=Math.floor((seconds%1)*10)
- return h?`${h}:${m}:${s}.${tenth}`:`${m}:${s}.${tenth}`
+ const ss=String(Math.floor(seconds%60).toString()).padStart(2,'0')
+ return (h?h+':':'')+m+':'+ss+'.'+Math.floor((seconds%1)*10)
 }
 const currentTime=computed(()=>formatTime(seekFrame.value/(videoMeta.value?.fps||30)))
 const totalTime=computed(()=>formatTime(videoMeta.value?.duration_seconds||0))
-const resolutionMismatch=computed(()=>!!(videoMeta.value&&calib.value&&
- (calib.value.reference_width!==videoMeta.value.width || calib.value.reference_height!==videoMeta.value.height)))
-function sliderTooltip(v:number):string {return `${formatTime(v/(videoMeta.value?.fps||30))} · 第 ${v} 帧`}
-function clampFrame(v:number):number {
+function sliderTooltip(v:number):string{return formatTime(v/(videoMeta.value?.fps||30))+' · 第 '+v+' 帧'}
+function clampFrame(v:number):number{
  return Math.max(0,Math.min(maxFrame.value,Number.isFinite(v)?Math.round(v):0))
 }
-function defaultCalib():Calibration{return {cx:360,cy:288,radius:160,reference_width:720,reference_height:576}}
-function init(){if(store.config){draft.value=JSON.parse(JSON.stringify(store.config)); for(const s of ['P1','P2','P3']){if(!draft.value!.calibrations[s])draft.value!.calibrations[s]=defaultCalib()}}}
-watch(()=>store.config,()=>{init();void loadVideoMetadata(false)},{immediate:true})
-function selectStage(s:'P1'|'P2'|'P3'){stage.value=s;void requestPreview()}
-
-// Query metadata once per selected local file. Responses for an older file are discarded.
-async function loadVideoMetadata(resetPosition:boolean):Promise<void> {
+function defaultCalib():Calibration{
+ return {cx:360,cy:288,radius:160,reference_width:720,reference_height:576}
+}
+function init(){
+ if(!store.config)return
+ draft.value=JSON.parse(JSON.stringify(store.config)) as AppConfig
+ stage.value=store.config.selected_stage
+ for(const key of ['P1','P2','P3']){
+  if(!draft.value.calibrations[key])draft.value.calibrations[key]=defaultCalib()
+ }
+ dirty.value=false
+}
+function selectStage(value:'P1'|'P2'|'P3'){
+ stage.value=value
+ if(draft.value){draft.value.selected_stage=value;dirty.value=true}
+ schedulePreview()
+}
+function playbackRequest(index:number){
+ const config=draft.value!
+ return {
+  source:{...config.source},frame_index:clampFrame(index),stage:stage.value,
+  calibration:calib.value?{...calib.value}:null,detector:{...config.detector},
+ }
+}
+async function pollPlayback():Promise<void>{
+ if(!active||!canPreview.value||pollBusy)return
+ pollBusy=true
+ try{
+  const result=await request<PlaybackState>('/api/playback/state?after_revision='+previewRevision)
+  if(!active||!canPreview.value)return
+  playbackState.value=result.state
+  previewStatus.value=result.status
+  previewScore.value=result.s_water
+  previewHistory.value=result.history
+  if(result.jpeg_base64){
+   previewImage.value='data:image/jpeg;base64,'+result.jpeg_base64
+   previewRevision=result.revision
+  }
+  if(result.reason)error.value=result.reason
+  else if(!metadataBusy.value)error.value=''
+  if(!isScrubbing.value&&result.frame_index>=0){
+   frameIndex.value=clampFrame(result.frame_index)
+   seekFrame.value=frameIndex.value
+  }
+ }catch(e){if(active)error.value='视频播放状态获取失败：'+String(e)}
+ finally{pollBusy=false}
+}
+async function startPlayback(index:number):Promise<void>{
+ if(!canPreview.value)return
+ playbackBusy.value=true
+ previewRevision=-1
+ previewImage.value=''
+ error.value=''
+ try{
+  const state=await request<PlaybackState>('/api/playback/start','POST',playbackRequest(index))
+  if(!active)return
+  playbackState.value=state.state
+  await pollPlayback()
+ }catch(e){
+  if(active){playbackState.value='ERROR';error.value='视频播放失败：'+String(e)}
+ }finally{playbackBusy.value=false}
+}
+async function loadVideoMetadata(resetPosition:boolean):Promise<void>{
  const version=++metadataVersion
- previewVersion++ // invalidate in-flight previews when video source changes
  videoMeta.value=null
  previewImage.value=''
- rawImage.value=''
  previewHistory.value=[]
+ previewScore.value=null
  error.value=''
- if(!draft.value?.source.address || !isVideoFile.value)return
+ if(!draft.value?.source.address||!isVideoFile.value)return
  metadataBusy.value=true
- const source={...draft.value.source}
- try {
-  const result=await request<VideoMetadata>('/api/camera/metadata','POST',{source})
-  if(version!==metadataVersion)return
-  videoMeta.value=result
+ try{
+  const info=await request<VideoMetadata>('/api/camera/metadata','POST',{source:{...draft.value.source}})
+  if(version!==metadataVersion||!active)return
+  videoMeta.value=info
   frameIndex.value=resetPosition?0:clampFrame(frameIndex.value)
   seekFrame.value=frameIndex.value
-  await requestPreview()
+  await startPlayback(frameIndex.value)
  }catch(e){
-  if(version===metadataVersion)error.value='无法读取视频信息：'+String(e)
- }finally{
-  if(version===metadataVersion)metadataBusy.value=false
- }
+  if(version===metadataVersion&&active)error.value='无法读取视频信息：'+String(e)
+ }finally{if(version===metadataVersion)metadataBusy.value=false}
 }
-
-// Run just one preview request chain. If a newer seek arrives while processing,
-// discard the stale response and process the latest position instead.
-async function requestPreview():Promise<void> {
- ++previewVersion
- if(previewWorkerActive || !canPreview.value)return
- previewWorkerActive=true
+/** Uncommitted draft tuning resets the detector's residence window, not the
+ * monitoring worker. A paused preview stays paused after recalculation. */
+async function updatePlayback():Promise<void>{
+ ++updateVersion
+ if(updateBusy||!canPreview.value||!draft.value)return
+ updateBusy=true
  busy.value=true
- try {
-  while(canPreview.value){
-   const version=previewVersion
-   const source={...draft.value!.source}
-   const calibration={...calib.value!}
-   const params={...detector.value!}
-   const index=frameIndex.value
-   const selectedStage=stage.value
-   error.value=''
-   previewStatus.value='计算中…'
-   previewImage.value=''
-   try {
-    // Show target frame quickly while the Python time-history preview computes.
-    const frame=await request<{width:number;height:number;jpeg_base64:string}>(
-      '/api/camera/frame','POST',{source,frame_index:index})
-    if(version!==previewVersion)continue
-    rawImage.value='data:image/jpeg;base64,'+frame.jpeg_base64
-    const resp=await request<{status:string;s_water:number;samples:{time_s:number;s_water:number}[];jpeg_base64:string}>(
-      '/api/debug/preview','POST',{
-       source,stage:selectedStage,calibration,detector:params,frame_index:index
-      })
-    if(version!==previewVersion)continue
-    previewImage.value='data:image/jpeg;base64,'+resp.jpeg_base64
-    previewScore.value=resp.s_water
-    previewStatus.value=resp.status
-    previewHistory.value=resp.samples.map(v=>v.s_water)
+ try{
+  while(active&&canPreview.value&&draft.value){
+   const revision=updateVersion
+   try{
+    await request<PlaybackState>('/api/playback/update','POST',playbackRequest(frameIndex.value))
+    if(revision===updateVersion)break
    }catch(e){
-    if(version===previewVersion){
-     previewStatus.value='预览失败'
-     error.value=String(e)
-    }
+    if(active)error.value='应用临时参数失败：'+String(e)
+    break
    }
-   if(version===previewVersion)break
   }
- }finally{
-  previewWorkerActive=false
-  busy.value=false
- }
+ }finally{updateBusy=false;busy.value=false}
 }
-function jumpToFrame(value:number):void {
- if(!videoMeta.value)return
+function schedulePreview(){
+ dirty.value=true
+ if(timer)clearTimeout(timer)
+ timer=setTimeout(()=>{void updatePlayback()},280)
+}
+function jumpToFrame(value:number):void{
+ if(!canPreview.value)return
  const target=clampFrame(value)
  frameIndex.value=target
  seekFrame.value=target
- void requestPreview()
+ if(timer){clearTimeout(timer);timer=null}
+ isScrubbing.value=false
+ playbackBusy.value=true
+ void request<PlaybackState>('/api/playback/seek','POST',{frame_index:target})
+  .then(data=>{playbackState.value=data.state})
+  .catch(()=>startPlayback(target))
+  .finally(()=>{playbackBusy.value=false})
 }
-function onSeekCommit(value:number|number[]):void {
+function onSeekCommit(value:number|number[]):void{
  jumpToFrame(Array.isArray(value)?value[0]:value)
 }
-function stepFrame(delta:number):void {jumpToFrame(frameIndex.value+delta)}
-function schedulePreview(){dirty.value=true;if(timer)clearTimeout(timer);timer=setTimeout(requestPreview,400)}
+function stepFrame(delta:number):void{jumpToFrame(frameIndex.value+delta)}
+async function togglePlayback():Promise<void>{
+ if(playbackBusy.value||!canPreview.value)return
+ playbackBusy.value=true
+ try{
+  const endpoint=isPlaying.value?'/api/playback/pause':'/api/playback/resume'
+  const result=await request<PlaybackState>(endpoint,'POST')
+  playbackState.value=result.state
+ }catch(e){error.value=String(e)}
+ finally{playbackBusy.value=false}
+}
+watch(()=>store.config,()=>{init();void loadVideoMetadata(false)},{immediate:true})
+onMounted(()=>{pollTimer=setInterval(()=>{void pollPlayback()},120)})
 function pointInSource(e:PointerEvent){
  if(!svg.value||!calib.value)return null
  const rect=svg.value.getBoundingClientRect()
@@ -189,9 +244,12 @@ async function chooseVideo(){
  }
 }
 onBeforeUnmount(()=>{
+ active=false
  if(timer)clearTimeout(timer)
+ if(pollTimer)clearInterval(pollTimer)
  metadataVersion++
- previewVersion++
+ updateVersion++
+ if(isVideoFile.value)void request('/api/playback/stop','POST').catch(()=>{})
 })
 </script>
 <template>
