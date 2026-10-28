@@ -30,6 +30,7 @@ const fileHistory = ref<number[]>([])
 const fileReason = ref('')
 const testBusy = ref(false)
 const seekFrame = ref(0)
+const isScrubbing = ref(false)
 const selectedFrame = ref(0)
 const testStage = ref<'P1' | 'P2' | 'P3'>('P1')
 let metadataVersion = 0
@@ -166,6 +167,7 @@ async function testAtFrame(value: number): Promise<void> {
   }
 }
 function seekTo(value: number | number[]): void {
+  isScrubbing.value = false
   void testAtFrame(Array.isArray(value) ? value[0] : value)
 }
 function stepFrame(delta: number): void {
@@ -187,7 +189,7 @@ function onStageChange(): void {
 // While showing the live processed file stream, the seek thumb tracks
 // its actual frame number. Dragging explicitly switches to isolated testing.
 watch(() => store.monitor.frame_id, frameId => {
-  if (fileSource.value && !manualPreview.value && typeof frameId === 'number') {
+  if (fileSource.value && !manualPreview.value && !isScrubbing.value && typeof frameId === 'number') {
     seekFrame.value = clampFrame(frameId)
   }
 })
@@ -286,7 +288,7 @@ async function toggle() {
         <el-slider v-model="seekFrame" :min="0" :max="videoMeta?.last_frame_index ?? 0" :step="1"
           :disabled="!videoMeta || metaBusy" aria-label="本地视频进度条，拖动后跳转到目标帧"
           :format-tooltip="sliderTooltip"
-          @change="seekTo" />
+          @input="isScrubbing=true" @change="seekTo" />
         <div class="monitor-timeline-actions">
           <el-button size="small" :disabled="!videoMeta" @click="seekTo(0)">开头</el-button>
           <el-button size="small" :disabled="!videoMeta" @click="stepFrame(-1)">◀ 上一帧</el-button>
