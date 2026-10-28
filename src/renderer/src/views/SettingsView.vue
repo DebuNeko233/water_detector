@@ -4,8 +4,20 @@ import {ElMessage} from 'element-plus'
 import {useSystemStore} from '../stores/system'
 import {commitConfig,type AppConfig} from '../api/client'
 const store=useSystemStore();const draft=ref<AppConfig|null>(null)
+const saving=ref(false)
 watch(()=>store.config,c=>{if(c)draft.value=JSON.parse(JSON.stringify(c))},{immediate:true})
-async function save(){if(!draft.value)return;try{store.config=await commitConfig(draft.value);ElMessage.success('保存成功')}catch(e){ElMessage.error(String(e))}}
+async function save(){
+  if(!draft.value || saving.value)return
+  saving.value=true
+  try{
+    store.config=await commitConfig(draft.value)
+    ElMessage.success('保存成功')
+  }catch(e){
+    ElMessage.error('保存配置失败：'+String(e))
+  }finally{
+    saving.value=false
+  }
+}
 async function chooseVideo(){const p=await window.desktop?.system.selectFile();if(p&&draft.value){draft.value.source.kind='file';draft.value.source.address=p}}
 </script>
 <template><div class="panel" style="max-width:720px" v-if="draft"><div class="panel-title">视频输入源</div><el-form label-width="130px">
@@ -19,5 +31,5 @@ async function chooseVideo(){const p=await window.desktop?.system.selectFile();i
   <el-form-item v-if="draft.stage_mode==='single'" label="当前工位"><el-radio-group v-model="draft.selected_stage"><el-radio-button value="P1">P1</el-radio-button><el-radio-button value="P2">P2</el-radio-button><el-radio-button value="P3">P3</el-radio-button></el-radio-group></el-form-item>
   <el-alert v-if="draft.source.kind==='industrial'" title="需确定厂商相机 SDK 后提供适配器；该类型当前不支持连接" type="warning" :closable="false"/>
   <el-alert v-if="draft.stage_mode==='auto'" title="自动工位识别为实验性功能，未标定三个位置的参考图时会输出 UNKNOWN/PAUSED" type="warning" :closable="false" style="margin-top:12px"/>
-  <el-form-item style="margin-top:18px"><el-button type="primary" @click="save">保存配置</el-button></el-form-item>
+  <el-form-item style="margin-top:18px"><el-button type="primary" :loading="saving" :disabled="saving" @click="save">保存配置</el-button></el-form-item>
  </el-form></div></template>
