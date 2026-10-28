@@ -1,4 +1,10 @@
-"""FastAPI 应用工厂：装配中间件、路由和生命周期资源。"""
+"""FastAPI application: wafer inspection routes with template process/session runtime.
+
+The original wafer FastAPI app owns MonitorTask and its shutdown lifespan.
+The desktop template adds authenticated IPC, event hub and control endpoints,
+without replacing or bypassing the existing wafer lifecycle.
+"""
+from __future__ import annotations
 
 import hmac
 from contextlib import asynccontextmanager
@@ -8,8 +14,8 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from .api.control import router as control_router
-from .api.routes import router as api_router
-from .api.websocket import router as websocket_router
+from .api.routes import router as demo_router
+from .api.websocket import router as event_router
 from .core.config import session_token
 from .core.logging import configure_logging
 from .services.demo_jobs import DemoJobs
@@ -17,42 +23,44 @@ from .services.event_hub import EventHub
 from water_detector.service.api import create_app as create_wafer_app
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 生命周期内初始化任务和事件中心，确保不同 app 实例相互隔离。
-    configure_logging()
-    app.state.events = EventHub()
-    app.state.jobs = DemoJobs(app.state.events.publish)
-    logger.info("FastAPI is starting")
-    try:
-        yield
-    finally:
-        # 先停任务，再关闭事件中心，避免退出时任务仍在广播。
-        await app.state.jobs.close()
-        await app.state.events.close()
-        logger.info("FastAPI is shutting down")
-
-
 def create_app() -> FastAPI:
-    app = FastAPI(title="Wafer Water Detector", version="0.1.0", lifespan=lifespan)
+    app = create_wafer_app()
+    app.title = "Wafer Water Detector"
+    # CRITICAL: Preserve the inspection application's existing lifespan.
+    # include_router(other_app.router) alone would not run its shutdown handler.
+    wafer_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def desktop_lifespan(application: FastAPI):
+        configure_logging()
+        application.state.events = EventHub()
+        application.state.jobs = DemoJobs(application.state.events.publish)
+        logger.info("Wafer desktop backend starting")
+        try:
+            async with wafer_lifespan(application):
+                yield
+        finally:
+            await application.state.jobs.close()
+            await application.state.events.close()
+            logger.info("Wafer desktop backend stopped")
+
+    app.router.lifespan_context = desktop_lifespan
 
     @app.middleware("http")
     async def authenticate_api(request: Request, call_next):
-        # /api/ 使用会话令牌；/internal/shutdown 由专用控制令牌保护。
         if request.url.path.startswith("/api/"):
             required = session_token()
             supplied = request.headers.get("x-session-token", "")
-            # 开发模式令牌为空；发行模式才启用随机令牌校验。
             if required and not hmac.compare_digest(required, supplied):
                 return JSONResponse(status_code=401, content={"detail": "INVALID_SESSION"})
         return await call_next(request)
 
-    app.include_router(api_router)
-    app.include_router(websocket_router)
+    # The wafer routes are already registered, including /api/health,
+    # /api/config/*, /api/camera/*, and the monitor endpoints.
+    # Template routes add the development echo and event stream.
+    app.include_router(demo_router)
+    app.include_router(event_router)
     app.include_router(control_router)
-    # Reuse the actual wafer detector FastAPI routes and their cleanup lifespan.
-    # No detector algorithm or calibration model is replaced by the desktop shell.
-    app.include_router(create_wafer_app().router)
     return app
 
 
