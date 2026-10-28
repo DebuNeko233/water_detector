@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import uuid
 from contextlib import asynccontextmanager
 import base64
 from pathlib import Path
@@ -29,6 +30,12 @@ class PreviewRequest(BaseModel):
     calibration: Calibration
     detector: DetectorConfig
     frame_index: int = Field(0, ge=0)
+
+
+class PositionReferenceCaptureRequest(BaseModel):
+    source: SourceConfig
+    frame_index: int = Field(ge=0)
+    stage: str
 
 
 class PlaybackSeekRequest(BaseModel):
@@ -167,6 +174,30 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
 
     # Local-file playback for interactive algorithm testing. This session is
     # entirely independent of the production monitor task and its recordings.
+    @app.post("/api/position/reference/capture")
+    def position_reference_capture(req: PositionReferenceCaptureRequest):
+        """Capture a P1/P2/P3 reference from the displayed test video frame.
+
+        The frontend only assigns this path to its UNCOMMITTED draft. Capturing
+        an image does not enable auto mode or modify the active configuration.
+        """
+        if req.stage not in ("P1", "P2", "P3"):
+            raise HTTPException(400, "Reference stage must be P1/P2/P3")
+        try:
+            frame = read_file_frame(RefFrameRequest(
+                source=req.source, frame_index=req.frame_index
+            ))
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        directory = manager.home / "position_references"
+        directory.mkdir(parents=True, exist_ok=True)
+        success, encoded = cv2.imencode(".png", frame)
+        if not success:
+            raise HTTPException(500, "Reference image encode failed")
+        destination = directory / (req.stage + "_" + uuid.uuid4().hex + ".png")
+        destination.write_bytes(encoded.tobytes())
+        return {"stage": req.stage, "frame_index": req.frame_index, "path": str(destination)}
+
     @app.post("/api/playback/start")
     def playback_start(req: PlaybackRequest):
         try:
