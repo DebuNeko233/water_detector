@@ -1,44 +1,59 @@
-/** Start Python and Electron together without opening a second console window.
- * For independent debugging use pnpm dev:backend or pnpm dev:frontend.
+/** Development launcher: Electron is the ONLY owner of its Python process.
+ * First-run uv sync prepares backend/.venv; no second Python terminal or port race.
+ * pnpm dev:backend and pnpm dev:ui-only are independent debugging tools.
  */
 import { spawn, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ensureUv } from './uv-bootstrap.mjs'
+import { resolveProcessCommand } from './lib/process-command.mjs'
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-try { await ensureUv() } catch (error) { console.error(error); process.exit(1) }
-const showLogs = process.argv.includes('--combined') || process.env.WAFER_DEBUG_CONSOLE === '1'
-let stopping = false
-let backend = null
-let frontend = null
-const children = []
-function launch(script, quiet = false) {
-  const windows = process.platform === 'win32'
-  const command = windows ? 'cmd.exe' : 'npm'
-  const args = windows ? ['/d', '/s', '/c', 'npm run ' + script] : ['run', script]
-  const child = spawn(command, args, {
-    cwd: root, shell: false, windowsHide: true, stdio: quiet ? 'ignore' : 'inherit',
-  })
-  children.push(child)
-  child.on('error', (error) => { console.error('[dev]', script, error); stop(1) })
-  child.on('exit', (code) => { if (!stopping) stop(code === 0 ? 0 : (code || 1)) })
-  return child
+const backend = path.join(root, 'backend')
+const python = path.join(backend, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+const combined = process.argv.includes('--combined')
+let uv
+try {
+  uv = await ensureUv()
+  if (!fs.existsSync(python)) {
+    console.info('[dev] Setting up Python environment for first run...')
+    const setup = spawnSync(uv, ['sync', '--project', backend, '--group', 'dev'], {
+      cwd: root, stdio: 'inherit', windowsHide: true, shell: false,
+    })
+    if (setup.error || setup.status !== 0) throw new Error('Python setup failed: ' + (setup.error?.message ?? setup.status))
+  }
+} catch (error) {
+  console.error('[dev]', error)
+  process.exit(1)
 }
-function stop(code = 0) {
+
+const runner = (process.env.npm_config_user_agent ?? '').startsWith('pnpm/') ? 'pnpm' : 'npm'
+const command = resolveProcessCommand(runner, ['run', 'dev:frontend'])
+const electron = spawn(command.command, command.args, {
+  cwd: root,
+  shell: false,
+  windowsHide: true,
+  stdio: 'inherit',
+  env: {
+    ...process.env,
+    // The template's dev:frontend runs Electron, whose BackendManager now starts Python.
+    WAFER_USE_EXTERNAL_BACKEND: '0',
+    WAFER_DEBUG_CONSOLE: combined ? '1' : (process.env.WAFER_DEBUG_CONSOLE ?? '0'),
+  },
+})
+let stopping = false
+function close() {
   if (stopping) return
   stopping = true
-  process.exitCode = code
-  for (const child of children) {
-    if (!child.pid || child.exitCode !== null) continue
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-    } else {
-      child.kill('SIGTERM')
-    }
-  }
+  // Electron first gets a graceful exit whenever possible; its own
+  // before-quit and Python parent watchdog handle backend cleanup.
+  if (electron.pid && electron.exitCode === null) electron.kill('SIGTERM')
 }
-process.once('SIGINT', () => stop(0))
-process.once('SIGTERM', () => stop(0))
-backend = launch('dev:backend', !showLogs)
-frontend = launch('dev:frontend', false)
-console.log('[dev] Electron + Python started. The Python backend is hidden unless --combined is used.')
+electron.on('error', error => { console.error('[dev] Frontend failed:', error); process.exitCode = 1; close() })
+electron.on('exit', (code, signal) => {
+  if (!stopping && code !== 0 && signal !== 'SIGINT' && signal !== 'SIGTERM') process.exitCode = code || 1
+})
+process.once('SIGINT', close)
+process.once('SIGTERM', close)
+console.info('[dev] Electron controls its private Python backend; use --combined for visible diagnostics.')
