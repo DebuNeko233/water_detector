@@ -174,6 +174,15 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         except (ValueError, FileNotFoundError, RuntimeError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/api/playback/update")
+    def playback_update(req: PlaybackRequest):
+        # Unsaved ROI and threshold edits only affect the independent preview.
+        # The production monitor and committed app config are not modified.
+        try:
+            return playback.update(req)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/playback/seek")
     def playback_seek(req: PlaybackSeekRequest):
         try:
