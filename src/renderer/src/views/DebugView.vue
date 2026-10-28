@@ -17,7 +17,7 @@ interface PlaybackState {
  stage:'P1'|'P2'|'P3'|'UNKNOWN'
  position_confidence:number
  position_scores:Record<string,number>
- position_features:Record<string,{edge:number;material:number}>
+ position_features:Record<string,{edge:number;material:number;fit:number}>
  wafer_center:[number,number]|null
  wafer_radius:number|null
  recognition_mode:'single'|'auto'
@@ -68,8 +68,11 @@ const autoRoiReady=computed(()=>{
  if(!cfg||!meta)return false
  const rois=['P1','P2','P3'].map(k=>cfg.calibrations[k])
  if(rois.some(r=>!r||r.reference_width!==meta.width||r.reference_height!==meta.height))return false
+ // The three wafer ROI circles may overlap substantially; only exact
+ // duplicate centre-and-radius definitions make automatic choice ambiguous.
  for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){
-  if(Math.hypot(rois[i].cx-rois[j].cx,rois[i].cy-rois[j].cy)<0.5*Math.min(rois[i].radius,rois[j].radius))return false
+  if(Math.hypot(rois[i].cx-rois[j].cx,rois[i].cy-rois[j].cy)<2 &&
+     Math.abs(rois[i].radius-rois[j].radius)<2)return false
  }
  return true
 })
@@ -352,12 +355,12 @@ onBeforeUnmount(()=>{
         <div><span class="muted">检测状态</span><strong>{{previewStatus}}</strong></div>
       </div>
       <div v-if="isAuto" class="muted">
-        <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}}</span>
+        <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}} / 匹配 ROI={{(positionFeatures[pos]?.fit ?? 0).toFixed(3)}}</span>
       </div>
       <el-alert v-if="isAuto && !autoRoiReady"
-        title="请先分别标定 P1/P2/P3 三个不同的晶圆位置（圆心与半径），并确保标定分辨率与视频一致；无需采集参考照片。"
+        title="请分别设置 P1/P2/P3 的圆心与半径，并确保视频分辨率匹配。三个 ROI 允许重叠，只要不是完全相同的圆。"
         type="warning" :closable="false" show-icon />
-      <p class="hint">融合圆形边缘的连续性与晶圆内外颜色、亮度及反光分布差异，选择三个预设位置中的 ROI；不需要参考照片。材质差异不足、边界被遮挡或多个位置难以区分时返回 UNKNOWN/PAUSED。下方分数均为视觉证据，并非概率；请结合“显示算法 ROI”核对。</p>
+      <p class="hint">直接比较 P1/P2/P3 三个预设圆是否框住晶圆：综合晶圆边缘与 ROI 圆心/半径贴合度、圆内外材质差异。三个 ROI 可以重叠，不需要参考照片。材质差异不足、边界被遮挡或多个位置难以区分时返回 UNKNOWN/PAUSED。下方分数均为视觉证据，并非概率；请结合“显示算法 ROI”核对。</p>
     </div>
     <div v-if="isVideoFile" class="video-timeline">
      <div class="timeline-top">
