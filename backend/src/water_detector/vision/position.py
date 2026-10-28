@@ -107,32 +107,43 @@ class PositionRecognizer:
 
     def _direct_roi_enclosure(self, lab: np.ndarray, cx: float, cy: float,
                               radius: float) -> float:
-        """How strongly the pre-defined ROI encloses a bright wafer-like disk.
+        """Compare HOW MUCH wafer material each SAVED ROI actually encloses.
 
-        Unlike circular-edge fitting, this direct enclosure comparison also
-        works when spray hides the rim. Median luminance of the centre must
-        exceed the surrounding equipment, using a conservative separation.
-        Not a universal wafer/material classifier: dark wafers may be UNKNOWN.
+        An adaptive surface threshold is found between the central wafer
+        surface and the outside background. Count surface coverage inside the
+        ROI and penalize any surface spilling beyond its circular boundary.
+        This resolves overlapping presets (P1/P2/P3), unlike mere brightness
+        or nearest-circle-centre tests, even for an obscured circular edge.
         """
         height, width = lab.shape[:2]
-
-        def ring_median(factors: tuple[float, ...]) -> float | None:
-            xs = np.concatenate([
-                np.rint(cx + radius * f * self._cos).astype(np.int32) for f in factors
-            ])
-            ys = np.concatenate([
-                np.rint(cy + radius * f * self._sin).astype(np.int32) for f in factors
-            ])
-            valid = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
-            if int(valid.sum()) < 110:
-                return None
-            return float(np.median(lab[ys[valid], xs[valid], 0]))
-
-        inside = ring_median((0.25, 0.38, 0.53, 0.70))
-        outside = ring_median((1.17, 1.30, 1.43))
-        if inside is None or outside is None:
+        pad = 1.45 * radius
+        left, right = max(0, int(cx - pad)), min(width, int(cx + pad) + 1)
+        top, bottom = max(0, int(cy - pad)), min(height, int(cy + pad) + 1)
+        if right <= left or bottom <= top:
             return 0.0
-        return float(np.clip((inside - outside) / 160.0, 0.0, 1.0))
+        yy, xx = np.ogrid[top:bottom, left:right]
+        normalized_radius = np.hypot(xx - cx, yy - cy) / radius
+        brightness = lab[top:bottom, left:right, 0]
+        core = brightness[normalized_radius < 0.70]
+        background = brightness[
+            (normalized_radius > 1.18) & (normalized_radius < 1.42)
+        ]
+        if min(core.size, background.size) < 100:
+            return 0.0
+        center_l = float(np.median(core))
+        background_l = float(np.median(background))
+        # A thin metal machine ring is NOT a filled wafer: both regions then
+        # have essentially the same underlying brightness.
+        if center_l - background_l < 12.0:
+            return 0.0
+        wafer_surface = brightness > 0.5 * (center_l + background_l)
+        inside = normalized_radius < 1.0
+        outside = (normalized_radius > 1.02) & (normalized_radius < 1.42)
+        coverage = float(np.mean(wafer_surface[inside]))
+        spill = float(np.mean(wafer_surface[outside]))
+        # A ROI which cuts the wafer off at its perimeter receives a lower
+        # score than one containing the whole disk with minimal background.
+        return float(np.clip(coverage - 1.3 * spill, 0, 1))
 
     def classify(self, frame: np.ndarray) -> tuple[str, float, dict[str, float]]:
         """(stage or UNKNOWN, best combined support, per-stage combined support)."""
@@ -276,7 +287,7 @@ class PositionRecognizer:
             }
             order = sorted(enclosed, key=enclosed.__getitem__, reverse=True)
             first, second = order[:2]
-            if enclosed[first] >= 0.30 and enclosed[first] - enclosed[second] >= 0.12:
+            if enclosed[first] >= 0.30 and enclosed[first] - enclosed[second] >= 0.045:
                 # Do not fabricate a measured circle centre from the
                 # calibration when only surface occupancy is available.
                 return first, enclosed[first], enclosed
