@@ -5,7 +5,7 @@ export interface DetectorConfig {
   inner_radius_ratio:number; outer_radius_ratio:number; diff_threshold:number
   history_seconds:number; persistence_threshold:number; s_water_threshold:number
   ng_hold_seconds:number; recover_hold_seconds:number; sector_count:number
-  sector_threshold:number; blur_ksize:number
+  sector_threshold:number; blur_ksize:number; nozzle_filter_enabled:boolean
 }
 export interface Calibration { cx:number; cy:number; radius:number; reference_width:number; reference_height:number }
 export interface SourceConfig {kind:'file'|'usb'|'rtsp'|'industrial'; address:string; device_index:number}
