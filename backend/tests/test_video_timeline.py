@@ -507,3 +507,48 @@ def test_overlapping_roi_can_select_surface_when_circular_rim_is_obscured() -> N
 
     empty = np.full_like(frame, 38)
     assert PositionRecognizer(rois).classify(empty)[0] == "UNKNOWN"
+
+
+def test_dynamic_nozzle_is_excluded_from_wafer_position_evidence() -> None:
+    """Near-vertical dark spray head must not outrank the wafer on a saved ROI."""
+    from water_detector.config.schema import Calibration
+    from water_detector.vision.nozzle import nozzle_occlusion_mask
+    from water_detector.vision.position import PositionRecognizer
+
+    rois = {
+        "P1": Calibration(cx=264, cy=456, radius=115,
+                          reference_width=720, reference_height=576),
+        "P2": Calibration(cx=269, cy=410, radius=126,
+                          reference_width=720, reference_height=576),
+        "P3": Calibration(cx=267, cy=391, radius=134,
+                          reference_width=720, reference_height=576),
+    }
+    frame = np.full((576, 720, 3), (45, 48, 51), np.uint8)
+    cv2.circle(frame, (267, 391), 134, (175, 185, 205), -1)
+    cv2.circle(frame, (267, 391), 134, (240, 240, 240), 2)
+    mask_before = nozzle_occlusion_mask(frame, rois)
+    # No obvious slim vertical tool in the clean test frame.
+    assert mask_before.mean() < 0.10
+
+    # A black nozzle intrudes vertically from above, hiding part of the
+    # wafer surface and rim. Its X location changes as the robot moves.
+    for nozzle_x in (208, 240, 305):
+        occluded = frame.copy()
+        cv2.rectangle(occluded, (nozzle_x - 17, 215),
+                      (nozzle_x + 17, 469), (23, 23, 23), -1)
+        nozzle_mask = nozzle_occlusion_mask(occluded, rois)
+        in_tool = nozzle_mask[290:395, nozzle_x-12:nozzle_x+12]
+        assert in_tool.mean() > 0.10, (nozzle_x, in_tool.mean())
+        assert nozzle_mask.mean() < 0.23
+        recognizer = PositionRecognizer(rois)
+        stage, _, scores = recognizer.classify(occluded)
+        # A severely occluded or ambiguous wafer may be UNKNOWN but never
+        # invent a different stage merely because the nozzle moved.
+        assert stage in ("P3", "UNKNOWN"), (nozzle_x, stage, scores)
+        assert recognizer.last_nozzle_fraction > 0.0
+
+
+def test_nozzle_filter_blank_and_missing_calibration_are_noops() -> None:
+    from water_detector.vision.nozzle import nozzle_occlusion_mask
+    background = np.full((120, 160, 3), 50, np.uint8)
+    assert not nozzle_occlusion_mask(background, {}).any()
