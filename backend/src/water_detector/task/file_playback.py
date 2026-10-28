@@ -30,7 +30,6 @@ class PlaybackRequest(BaseModel):
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     stage_mode: Literal["single", "auto"] = "single"
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
-    position_references: dict[str, str] = Field(default_factory=dict)
     show_algorithm_roi: bool = True
 
 
@@ -60,7 +59,8 @@ class FilePlayback:
         return {
             "state": "IDLE", "frame_index": -1, "fps": 0.0,
             "stage": "UNKNOWN", "position_confidence": 0.0,
-            "position_scores": {}, "roi": None, "recognition_mode": "single",
+            "position_scores": {}, "wafer_center": None, "wafer_radius": None,
+            "roi": None, "recognition_mode": "single",
             "status": "IDLE", "s_water": None, "history": [],
             "reason": "", "revision": 0,
         }
@@ -185,7 +185,6 @@ class FilePlayback:
             stage_mode=request.stage_mode,
             selected_stage=request.stage if request.stage in ("P1", "P2", "P3") else "P1",
             calibrations=calibrations,
-            position_references=request.position_references,
         )
 
     def _publish(self, frame, index: int, fps: float, pipeline: InspectionPipeline,
@@ -212,6 +211,8 @@ class FilePlayback:
                 stage=stage,
                 position_confidence=result.get("position_confidence", 0.0),
                 position_scores=result.get("position_scores", {}),
+                wafer_center=result.get("wafer_center"),
+                wafer_radius=result.get("wafer_radius"),
                 roi=roi, recognition_mode=request.stage_mode,
                 state="PAUSED" if self._paused else "PLAYING",
             )
