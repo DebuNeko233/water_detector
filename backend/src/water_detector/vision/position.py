@@ -70,8 +70,11 @@ class PositionRecognizer:
             valid = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
             return ys[valid], xs[valid]
 
-        inner_y, inner_x = samples((0.45, 0.60, 0.72, 0.84))
-        outer_y, outer_x = samples((1.10, 1.20, 1.30))
+        # Compare wafer SURFACE with the outer equipment, not the thin
+        # bright rim itself: otherwise an empty metal circle can look like a
+        # filled wafer when the radius search lands just inside its outline.
+        inner_y, inner_x = samples((0.35, 0.48, 0.60, 0.72))
+        outer_y, outer_x = samples((1.20, 1.32, 1.43))
         inside = lab[inner_y, inner_x]
         outside = lab[outer_y, outer_x]
         if min(len(inside), len(outside)) < 120:
