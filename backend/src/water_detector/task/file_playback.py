@@ -30,6 +30,7 @@ class PlaybackRequest(BaseModel):
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     stage_mode: Literal["single", "auto"] = "single"
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
+    position_references: dict[str, str] = Field(default_factory=dict)
     show_algorithm_roi: bool = True
     show_nozzle_mask: bool = False
 
@@ -188,6 +189,7 @@ class FilePlayback:
             stage_mode=request.stage_mode,
             selected_stage=request.stage if request.stage in ("P1", "P2", "P3") else "P1",
             calibrations=calibrations,
+            position_references=request.position_references,
         )
 
     def _publish(self, frame, index: int, fps: float, pipeline: InspectionPipeline,
