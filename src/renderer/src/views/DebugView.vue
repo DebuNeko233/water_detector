@@ -255,24 +255,25 @@ onBeforeUnmount(()=>{
 <template>
  <div class="debug-grid" v-if="draft&&detector&&calib">
   <div class="debug-left">
-   <section class="panel"><div class="toolbar"><div class="stage-tabs"><button v-for="s in (['P1','P2','P3'] as const)" :key="s" :class="{active:stage===s}" @click="selectStage(s)">{{s}}</button></div><el-tag type="info">鼠标拖动中心 / 半径</el-tag><el-button @click="chooseVideo">选择视频</el-button></div>
+   <section class="panel"><div class="panel-title">视频播放与算法测试</div><div class="toolbar"><div class="stage-tabs"><button v-for="s in (['P1','P2','P3'] as const)" :key="s" :class="{active:stage===s}" @click="selectStage(s)">{{s}}</button></div><el-switch v-model="showHandles" active-text="显示标定手柄" inactive-text="隐藏标定手柄" aria-label="显示或隐藏标定操作手柄"/><el-button @click="chooseVideo">选择视频</el-button></div>
     <svg ref="svg" class="roi-view" :viewBox="`0 0 ${calib.reference_width} ${calib.reference_height}`" preserveAspectRatio="xMidYMid meet" @pointermove="move" @pointerup="up" @pointercancel="up">
-      <image v-if="previewImage||rawImage" :href="previewImage||rawImage" x="0" y="0" :width="calib.reference_width" :height="calib.reference_height" preserveAspectRatio="none"/>
+      <image v-if="previewImage" :href="previewImage" x="0" y="0" :width="calib.reference_width" :height="calib.reference_height" preserveAspectRatio="none"/>
       <circle :cx="calib.cx" :cy="calib.cy" :r="calib.radius*detector.outer_radius_ratio" fill="none" stroke="#45e0a2" :stroke-width="Math.max(1.5,calib.reference_width/360)"/>
       <circle :cx="calib.cx" :cy="calib.cy" :r="calib.radius*detector.inner_radius_ratio" fill="none" stroke="#f4ba58" stroke-width="1.8" stroke-dasharray="6 4"/>
-      <circle :cx="calib.cx" :cy="calib.cy" r="10" fill="#408def" stroke="#fff" stroke-width="2" style="cursor:move" @pointerdown="down($event,'center')"/>
-      <circle :cx="calib.cx+calib.radius" :cy="calib.cy" r="10" fill="#2acb7f" stroke="#fff" stroke-width="2" style="cursor:ew-resize" @pointerdown="down($event,'radius')"/>
+      <circle v-if="showHandles" :cx="calib.cx" :cy="calib.cy" r="10" fill="#408def" stroke="#fff" stroke-width="2" style="cursor:move" @pointerdown="down($event,'center')"/>
+      <circle v-if="showHandles" :cx="calib.cx+calib.radius" :cy="calib.cy" r="10" fill="#2acb7f" stroke="#fff" stroke-width="2" style="cursor:ew-resize" @pointerdown="down($event,'radius')"/>
     </svg>
-    <p class="hint">蓝色手柄：拖动圆心；绿色手柄：改变半径。跳转后仍可调节 ROI 与参数，喷头 Mask 将由 Python 动态检测（当前版本尚未实现）。</p>
+    <p class="hint">蓝色手柄拖动圆心，绿色手柄改变半径。关闭手柄后可无遮挡地观察水面；ROI 边界和 Python 检测叠加仍然显示。</p>
     <div v-if="isVideoFile" class="video-timeline">
      <div class="timeline-top">
       <div><strong>视频进度</strong><span class="muted"> · {{videoMeta ? `${videoMeta.frame_count} 帧 · ${videoMeta.fps.toFixed(2)} FPS` : '正在读取信息'}}</span></div>
       <div class="timeline-time">{{currentTime}} <span>/ {{totalTime}}</span></div>
      </div>
      <el-slider v-model="seekFrame" :min="0" :max="maxFrame" :step="1" :disabled="!videoMeta || metadataBusy"
-       :format-tooltip="sliderTooltip" aria-label="视频进度，松开后跳转" @change="onSeekCommit"/>
+       :format-tooltip="sliderTooltip" aria-label="视频进度，松开后从当前位置继续播放" @input="isScrubbing=true" @change="onSeekCommit"/>
      <div class="timeline-bottom">
       <div class="timeline-step">
+       <el-button type="primary" size="small" :disabled="!videoMeta || playbackBusy" @click="togglePlayback">{{isPlaying?'Ⅱ 暂停':'▶ 播放'}}</el-button>
        <el-button size="small" :disabled="!videoMeta" @click="jumpToFrame(0)">开头</el-button>
        <el-button size="small" :disabled="!videoMeta" @click="stepFrame(-1)">◀ 上一帧</el-button>
        <el-button size="small" :disabled="!videoMeta" @click="stepFrame(1)">下一帧 ▶</el-button>
@@ -284,14 +285,14 @@ onBeforeUnmount(()=>{
        <span class="muted">/ {{maxFrame}}</span>
       </div>
      </div>
-     <p class="hint">拖动时可查看目标时间；松开后 Python 跳转至目标帧并重新计算局部 S_water history。切换位置不会修改正式参数。</p>
+     <p class="hint">拖动松开后自动继续播放；修改参数或标定 ROI 后自动重算当前帧的 S_water。暂停时调参不会自动恢复播放。</p>
      <el-alert v-if="resolutionMismatch" title="当前标定的分辨率与视频不匹配，请重新标定对应工位" type="warning" :closable="false"/>
     </div>
     <div v-else class="hint">当前是实时视频源，只有本地视频文件支持拖动跳转。</div>
-    <div class="toolbar" style="margin-top:12px"><el-button type="primary" :loading="busy||metadataBusy" :disabled="!canPreview" @click="requestPreview">重新计算预览</el-button><el-tag :type="dirty?'warning':'success'">{{dirty?'草稿未保存':'正式配置'}}</el-tag><span v-if="busy" class="muted">正在读取画面 / 计算历史…</span></div>
+    <div class="toolbar" style="margin-top:12px"><el-button :loading="busy||metadataBusy" :disabled="!canPreview" @click="updatePlayback">重新计算预览</el-button><el-tag :type="dirty?'warning':'success'">{{dirty?'临时参数（未保存）':'正式配置'}}</el-tag><el-tag type="info">{{playbackState}}</el-tag><span v-if="busy" class="muted">正在按新参数重建检测历史…</span></div>
     <el-alert v-if="error" :title="error" type="warning" show-icon :closable="false"/>
    </section>
-   <section class="panel"><div class="panel-title">S_water history · 参数草稿预览</div><div class="muted">{{previewStatus}} · 当前帧 S_water = {{previewScore.toFixed(4)}}</div><SWaterChart :values="previewHistory" :threshold="detector.s_water_threshold"/></section>
+   <section class="panel"><div class="panel-title">S_water history · 参数草稿预览</div><div class="muted">{{previewStatus}} · 当前帧 S_water = {{previewScore==null?'—':previewScore.toFixed(4)}}</div><SWaterChart :values="previewHistory" :threshold="detector.s_water_threshold"/></section>
   </div>
   <div class="debug-right">
    <section class="panel"><div class="panel-title">当前工位标定 {{stage}}</div>
