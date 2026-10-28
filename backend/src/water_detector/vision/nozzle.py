@@ -68,3 +68,34 @@ def nozzle_occlusion_mask(
         mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation, dilation)),
     )
     return mask > 0
+
+
+class DynamicNozzleFilter:
+    """Frame-local nozzle segmentation with a short temporal exclusion trail.
+
+    The helper is owned by InspectionPipeline and resets whenever inspection
+    state resets or a video is re-seeked. It does not guess a nozzle from ROI
+    location alone. The trailing union excludes only a few recent shaft
+    positions so a moving nozzle's motion cannot become persistent water.
+    """
+
+    def __init__(self, shape_hw: tuple[int, int], fps: float,
+                 calibrations: dict[str, Calibration]):
+        from collections import deque
+
+        self.shape = shape_hw
+        self.fps = fps
+        self.calibrations = calibrations
+        self._recent = deque(maxlen=max(1, min(3, int(round(fps * 0.10)))))
+
+    def reset(self) -> None:
+        self._recent.clear()
+
+    def detect(self, frame: np.ndarray) -> np.ndarray:
+        if frame.shape[:2] != self.shape:
+            raise ValueError("Nozzle detection frame size changed")
+        current = nozzle_occlusion_mask(frame, self.calibrations)
+        self._recent.append(current)
+        if len(self._recent) == 1:
+            return current
+        return np.logical_or.reduce(tuple(self._recent))
