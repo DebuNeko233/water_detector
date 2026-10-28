@@ -262,20 +262,18 @@ def test_live_draft_update_recalculates_paused_frame_without_saving(
 
 
 
-def test_auto_roi_uses_recognized_stage_not_selected_editor_stage(tmp_path: Path) -> None:
-    """Three distinctive reference frames drive actual P1/P2/P3 ROI switching."""
+def test_auto_roi_selects_by_wafer_circle_position_without_reference_images(tmp_path: Path) -> None:
+    """Position-only auto chooses the correct calibrated circle as wafer moves."""
     import time
 
     file = tmp_path / "three_positions.avi"
     writer = cv2.VideoWriter(str(file), cv2.VideoWriter_fourcc(*"MJPG"), 12.0, (160, 120))
     assert writer.isOpened()
-    rng = np.random.default_rng(20261028)
-    patterns = [
-        rng.integers(0, 255, (120, 160, 3), dtype=np.uint8)
-        for _ in range(3)
-    ]
     for index in range(36):
-        writer.write(patterns[index // 12])
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        cv2.circle(frame, ((36, 80, 120)[index // 12], 60), 25,
+                   (225, 225, 225), 2, cv2.LINE_AA)
+        writer.write(frame)
     writer.release()
     source = {"kind": "file", "address": str(file), "device_index": 0}
     calibrations = {
@@ -285,30 +283,17 @@ def test_auto_roi_uses_recognized_stage_not_selected_editor_stage(tmp_path: Path
     }
 
     with TestClient(create_app(ConfigManager(tmp_path / "auto-data"))) as client:
-        references = {}
-        for stage, frame_index in (("P1", 0), ("P2", 13), ("P3", 27)):
-            captured = client.post("/api/position/reference/capture", json={
-                "source": source, "stage": stage, "frame_index": frame_index
-            })
-            assert captured.status_code == 200, captured.text
-            references[stage] = captured.json()["path"]
-            assert Path(references[stage]).is_file()
-
-        cfg = client.get("/api/config/active").json()
-        # Capture is a DRAFT operation; no active config changed.
-        assert cfg["position_references"] == {}
+        saved = client.get("/api/config/active").json()
+        assert saved["position_references"] == {}
         request = {
             "source": source, "frame_index": 0, "stage": "P3",
             "stage_mode": "auto", "calibration": calibrations["P3"],
-            "calibrations": calibrations, "position_references": references,
-            "detector": cfg["detector"], "show_algorithm_roi": False,
+            "calibrations": calibrations,
+            "detector": saved["detector"], "show_algorithm_roi": False,
         }
-        started = client.post("/api/playback/start", json=request)
-        assert started.status_code == 200, started.text
-
+        assert client.post("/api/playback/start", json=request).status_code == 200
         for target, expected_stage in ((1, "P1"), (14, "P2"), (26, "P3")):
-            seek = client.post("/api/playback/seek", json={"frame_index": target})
-            assert seek.status_code == 200, seek.text
+            assert client.post("/api/playback/seek", json={"frame_index": target}).status_code == 200
             deadline = time.monotonic() + 8
             state = None
             while time.monotonic() < deadline:
@@ -321,13 +306,16 @@ def test_auto_roi_uses_recognized_stage_not_selected_editor_stage(tmp_path: Path
             assert state is not None and state["stage"] == expected_stage, state
             assert state["roi"]["cx"] == calibrations[expected_stage]["cx"]
             assert state["recognition_mode"] == "auto"
-            assert state["position_confidence"] >= .78
+            assert state["position_confidence"] >= 0.32
+            assert state["wafer_center"] is not None
+            assert abs(state["wafer_center"][0] - calibrations[expected_stage]["cx"]) < 7
             assert state["jpeg_base64"]
-            # Score is computed using the auto-selected stage, not P3 editor.
             assert state["s_water"] is not None
 
+        # Missing one calibrated ROI must FAIL CLOSED, not silently use P3.
         missing = client.post("/api/playback/update", json={
-            **request, "position_references": {"P1": references["P1"]}
+            **request, "calibrations": {"P1": calibrations["P1"],
+                                       "P2": calibrations["P2"]}
         })
         assert missing.status_code == 200
         deadline = time.monotonic() + 8
@@ -341,6 +329,30 @@ def test_auto_roi_uses_recognized_stage_not_selected_editor_stage(tmp_path: Path
         assert state["roi"] is None
         assert state["s_water"] is None
         assert client.get("/api/monitor/status").json()["state"] == "IDLE"
+        assert client.get("/api/config/active").json() == saved
+
+
+def test_position_recognizer_geometry_rejects_blank_and_ambiguous_frames() -> None:
+    from water_detector.vision.position import PositionRecognizer
+    from water_detector.config.schema import Calibration
+    calibs = {
+        k: Calibration(cx=x, cy=60, radius=25,
+                       reference_width=160, reference_height=120)
+        for k, x in (("P1", 34), ("P2", 80), ("P3", 126))
+    }
+    recognizer = PositionRecognizer(calibs)
+    blank = np.zeros((120, 160, 3), dtype=np.uint8)
+    assert recognizer.classify(blank)[0] == "UNKNOWN"
+    # Identically strong circular rims in multiple calibrated positions are
+    # ambiguous, and the algorithm must not report a guessed OK.
+    both = blank.copy()
+    cv2.circle(both, (34, 60), 25, (220, 220, 220), 2)
+    cv2.circle(both, (80, 60), 25, (220, 220, 220), 2)
+    assert recognizer.classify(both)[0] == "UNKNOWN"
+    # Repeatedly calibrated at the same centre is not three distinct positions.
+    same = {k: Calibration(cx=80, cy=60, radius=25,
+                           reference_width=160, reference_height=120) for k in calibs}
+    assert PositionRecognizer(same).classify(both)[0] == "UNKNOWN"
 
 
 def test_roi_visibility_keeps_water_anomaly_pixels() -> None:
