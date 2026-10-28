@@ -17,6 +17,8 @@ interface PlaybackState {
  stage:'P1'|'P2'|'P3'|'UNKNOWN'
  position_confidence:number
  position_scores:Record<string,number>
+ wafer_center:[number,number]|null
+ wafer_radius:number|null
  recognition_mode:'single'|'auto'
  roi:Calibration|null
 }
@@ -29,10 +31,10 @@ const playbackState=ref<PlaybackState['state']>('IDLE')
 const isScrubbing=ref(false)
 const showCalibrationEditor=ref(false)
 const showAlgorithmRoi=ref(true)
-const capturingReference=ref(false)
 const recognizedStage=ref('UNKNOWN')
 const matchScore=ref(0)
 const matchScores=ref<Record<string,number>>({})
+const waferCenter=ref<[number,number]|null>(null)
 const effectiveRoi=ref<Calibration|null>(null)
 const previewImage=ref('')
 const previewStatus=ref('尚未预览')
@@ -59,7 +61,16 @@ const isVideoFile=computed(()=>draft.value?.source.kind==='file')
 const canPreview=computed(()=>isVideoFile.value && !!draft.value?.source.address && !!videoMeta.value)
 const isPlaying=computed(()=>playbackState.value==='PLAYING'||playbackState.value==='SEEKING')
 const isAuto=computed(()=>draft.value?.stage_mode==='auto')
-const referenceCount=computed(()=>['P1','P2','P3'].filter(k=>!!draft.value?.position_references[k]).length)
+const autoRoiReady=computed(()=>{
+ const cfg=draft.value, meta=videoMeta.value
+ if(!cfg||!meta)return false
+ const rois=['P1','P2','P3'].map(k=>cfg.calibrations[k])
+ if(rois.some(r=>!r||r.reference_width!==meta.width||r.reference_height!==meta.height))return false
+ for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){
+  if(Math.hypot(rois[i].cx-rois[j].cx,rois[i].cy-rois[j].cy)<0.5*Math.min(rois[i].radius,rois[j].radius))return false
+ }
+ return true
+})
 const roiSummary=computed(()=>{
  const r=effectiveRoi.value
  return r?'(cx='+r.cx.toFixed(0)+', cy='+r.cy.toFixed(0)+', R='+r.radius.toFixed(0)+')':'无有效 ROI'
@@ -111,7 +122,6 @@ function playbackRequest(index:number){
   calibration:calib.value?{...calib.value}:null,detector:{...config.detector},
   stage_mode:config.stage_mode,
   calibrations:{...config.calibrations},
-  position_references:{...config.position_references},
   show_algorithm_roi:showAlgorithmRoi.value,
  }
 }
@@ -128,6 +138,7 @@ async function pollPlayback():Promise<void>{
   recognizedStage.value=result.stage || 'UNKNOWN'
   matchScore.value=result.position_confidence || 0
   matchScores.value=result.position_scores || {}
+  waferCenter.value=result.wafer_center || null
   effectiveRoi.value=result.roi || null
   if(result.jpeg_base64){
    previewImage.value='data:image/jpeg;base64,'+result.jpeg_base64
@@ -216,20 +227,6 @@ function adaptCalibrationToVideo():void{
  old.reference_width=videoMeta.value.width
  old.reference_height=videoMeta.value.height
  schedulePreview()
-}
-async function captureReference():Promise<void>{
- if(!draft.value||!canPreview.value||isPlaying.value||capturingReference.value)return
- capturingReference.value=true
- try{
-  const result=await request<{stage:string;frame_index:number;path:string}>(
-   '/api/position/reference/capture','POST',
-   {source:{...draft.value.source},frame_index:frameIndex.value,stage:stage.value})
-  draft.value.position_references[result.stage]=result.path
-  dirty.value=true
-  ElMessage.success('已采集 '+result.stage+' 参考帧（尚未保存配置）')
-  void updatePlayback()
- }catch(e){ElMessage.error('采集工位参考帧失败：'+String(e))}
- finally{capturingReference.value=false}
 }
 function onModeChange():void{
  if(draft.value)draft.value.selected_stage=stage.value
@@ -338,28 +335,26 @@ onBeforeUnmount(()=>{
     <p class="hint">关闭「手动标定层」可隐藏全部交互圆环和手柄；还可单独关闭「算法 ROI」边界，只看 Python 识别出的水流异常像素。</p>
     <div class="debug-position-panel">
       <div class="toolbar">
-        <strong>工位与 ROI 切换验证</strong>
+        <strong>按晶圆位置自动切换 ROI</strong>
         <el-radio-group v-model="draft.stage_mode" size="small" @change="onModeChange">
-          <el-radio-button value="single">手动工位</el-radio-button>
-          <el-radio-button value="auto">自动识别（实验性）</el-radio-button>
+          <el-radio-button value="single">手动指定</el-radio-button>
+          <el-radio-button value="auto">按位置选择 P1/P2/P3</el-radio-button>
         </el-radio-group>
-        <el-button size="small" :disabled="!canPreview || isPlaying || capturingReference"
-          :loading="capturingReference" @click="captureReference">采集当前帧为 {{stage}} 参考图</el-button>
-        <span class="muted">已采集 {{referenceCount}} / 3</span>
       </div>
       <div class="debug-stage-result">
-        <div><span class="muted">实际识别工位</span><strong>{{recognizedStage}}</strong></div>
-        <div><span class="muted">匹配分数（非概率）</span><strong>{{scoreText}}</strong></div>
-        <div><span class="muted">算法实际 ROI</span><strong>{{roiSummary}}</strong></div>
+        <div><span class="muted">实际使用 ROI</span><strong>{{recognizedStage}}</strong></div>
+        <div><span class="muted">圆形边缘匹配度（非概率）</span><strong>{{scoreText}}</strong></div>
+        <div><span class="muted">检测到的晶圆圆心</span><strong>{{waferCenter ? 'X='+waferCenter[0].toFixed(0)+'，Y='+waferCenter[1].toFixed(0) : '无法确定'}}</strong></div>
+        <div><span class="muted">使用的 ROI 坐标</span><strong>{{roiSummary}}</strong></div>
         <div><span class="muted">检测状态</span><strong>{{previewStatus}}</strong></div>
       </div>
       <div v-if="isAuto" class="muted">
-        P1={{(matchScores.P1 ?? 0).toFixed(3)}} · P2={{(matchScores.P2 ?? 0).toFixed(3)}} · P3={{(matchScores.P3 ?? 0).toFixed(3)}}
+        P1 位置={{(matchScores.P1 ?? 0).toFixed(3)}} · P2 位置={{(matchScores.P2 ?? 0).toFixed(3)}} · P3 位置={{(matchScores.P3 ?? 0).toFixed(3)}}
       </div>
-      <el-alert v-if="isAuto && referenceCount!==3"
-        title="自动工位识别需要 P1/P2/P3 三张参考帧：选择工位、暂停在对应位置后逐一采集。未配齐时输出 UNKNOWN，不进行水流 OK 判定。"
+      <el-alert v-if="isAuto && !autoRoiReady"
+        title="请先分别标定 P1/P2/P3 三个不同的晶圆位置（圆心与半径），并确保标定分辨率与视频一致；无需采集参考照片。"
         type="warning" :closable="false" show-icon />
-      <p class="hint">自动模式使用实验性的图像结构模板匹配。随视频播放观察工位与实际 ROI 是否切换；识别不可靠时显示 UNKNOWN/PAUSED，不能视为 OK。采集参考帧和标定修改仅在保存后成为正式配置。</p>
+      <p class="hint">根据画面中的晶圆圆形边界与三个已标定位置的几何匹配度选择 ROI，不使用整帧图片相似度。圆环不清晰、多个位置难以区分或晶圆不在标定区域时显示 UNKNOWN/PAUSED。打开“显示算法 ROI”可验证实际切换。</p>
     </div>
     <div v-if="isVideoFile" class="video-timeline">
      <div class="timeline-top">
