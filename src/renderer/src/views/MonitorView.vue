@@ -171,6 +171,9 @@ function seekTo(value: number | number[]): void {
 function stepFrame(delta: number): void {
   void testAtFrame(selectedFrame.value + delta)
 }
+function sliderTooltip(value: number): string {
+  return formatTime(value / (videoMeta.value?.fps || 30)) + ' · 第 ' + value + ' 帧'
+}
 function showLive(): void {
   manualPreview.value = false
 }
@@ -275,7 +278,7 @@ async function toggle() {
         </div>
         <el-slider v-model="seekFrame" :min="0" :max="videoMeta?.last_frame_index ?? 0" :step="1"
           :disabled="!videoMeta || metaBusy" aria-label="本地视频进度条，拖动后跳转到目标帧"
-          :format-tooltip="(v:number) => formatTime(v / (videoMeta?.fps || 30))"
+          :format-tooltip="sliderTooltip"
           @change="seekTo" />
         <div class="monitor-timeline-actions">
           <el-button size="small" :disabled="!videoMeta" @click="seekTo(0)">开头</el-button>
