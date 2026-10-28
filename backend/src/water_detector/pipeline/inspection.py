@@ -1,7 +1,6 @@
 """One-frame orchestration; detector is isolated from acquisition and API."""
 from __future__ import annotations
 import numpy as np
-import cv2
 from water_detector.config.schema import AppConfig
 from water_detector.detector.water import WaterDetector
 from water_detector.models.frames import FramePacket
@@ -33,18 +32,11 @@ class InspectionPipeline:
             if self.nozzle_filter is None or self.nozzle_filter.shape != shape:
                 self.nozzle_filter = DynamicNozzleFilter(shape, packet.fps, self.cfg.calibrations)
             nozzle_mask = self.nozzle_filter.detect(packet.image)
-        # Inpaint only the candidate nozzle region before geometry recognition.
-        # The real frame is still passed to WaterDetector; the mask is applied
-        # there to its temporal activity history, not used to repaint the video.
-        position_frame = (
-            cv2.inpaint(packet.image, np.uint8(nozzle_mask) * 255, 3, cv2.INPAINT_TELEA)
-            if nozzle_mask is not None and nozzle_mask.any() else packet.image
-        )
         if self.cfg.stage_mode == "single":
             stage, conf, scores = self.cfg.selected_stage, 1.0, {}
             center, detected_radius = None, None
         else:
-            stage, conf, scores = self.recognizer.classify(position_frame)
+            stage, conf, scores = self.recognizer.classify(packet.image, nozzle_mask=nozzle_mask if nozzle_mask is not None else np.zeros(packet.image.shape[:2], dtype=bool))
             center = self.recognizer.last_center
             detected_radius = self.recognizer.last_radius
         position_data = {
