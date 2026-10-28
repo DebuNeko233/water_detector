@@ -3,6 +3,7 @@ allowBuilds:
   electron: true
   esbuild: true
   electron-winstaller: true
+  vue-demi: true
 
 # Template mode: resolve from package.json ranges; do not read/create a lockfile.
 lockfile: false
