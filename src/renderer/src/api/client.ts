@@ -16,7 +16,7 @@ export interface AppConfig {
 }
 export interface MonitorState {
   state:string; status:string; task_id?:string; stage?:string; s_water?:number
-  timestamp_s?:number; abnormal_run_s?:number; max_sector_idx?:number
+  timestamp_s?:number; frame_id?:number; abnormal_run_s?:number; max_sector_idx?:number
   history?:number[]; processed_frames?:number; reason?:string; position_confidence?:number
 }
 export async function request<T>(path:string, method='GET', body?:unknown):Promise<T> {
