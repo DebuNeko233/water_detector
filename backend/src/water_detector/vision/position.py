@@ -13,7 +13,7 @@ videos (including wafer-absent footage) before using for production interlocks.
 """
 from __future__ import annotations
 
-from math import hypot
+from math import hypot, exp
 
 import cv2
 import numpy as np
@@ -33,7 +33,7 @@ class PositionRecognizer:
         self, calibrations: dict[str, Calibration], *,
         min_support: float = 0.32,
         min_material: float = 0.16,
-        min_margin: float = 0.09,
+        min_margin: float = 0.045,
     ):
         self.calibrations = {
             key: calibrations[key]
@@ -117,11 +117,13 @@ class PositionRecognizer:
             for cal in self.calibrations.values()
         ):
             return "UNKNOWN", 0.0, {}
+        # P1/P2/P3 often overlap heavily (e.g. concentric-looking discs at
+        # different heights in the same camera view). Overlap is ALLOWED.
+        # Reject only duplicate ROI definitions, where selection is impossible.
         for index, (_, left) in enumerate(items):
             for _, right in items[index + 1:]:
-                if hypot(left.cx - right.cx, left.cy - right.cy) < (
-                    0.5 * min(left.radius, right.radius)
-                ):
+                if (hypot(left.cx - right.cx, left.cy - right.cy) < 2
+                        and abs(left.radius - right.radius) < 2):
                     return "UNKNOWN", 0.0, {}
 
         # Processing downsample keeps high-resolution playback responsive.
@@ -150,6 +152,8 @@ class PositionRecognizer:
             expected_y = cal.cy * scale
             expected_r = cal.radius * scale
             best_edge = 0.0
+            best_fit = 0.0
+            best_ranking = 0.0
             best_circle = None
             if expected_r >= 8:
                 # Search only near the manually established wafer position.
@@ -175,8 +179,23 @@ class PositionRecognizer:
                             if quadrants < 3:
                                 continue
                             support = float(ring.mean())
-                            if support > best_edge:
+                            # Which of the THREE PRESET ROIs actually frames
+                            # this wafer? Reward the candidate whose observed
+                            # rim agrees with this ROI's centre AND radius.
+                            # This breaks the old tie between highly overlapping
+                            # P2/P3 without requiring non-overlapping centres.
+                            distance = hypot(cx - expected_x, cy - expected_y)
+                            normalized_distance = distance / max(expected_r, 1.0)
+                            normalized_radius = abs(radius - expected_r) / max(expected_r, 1.0)
+                            fit = exp(-0.5 * (
+                                (normalized_distance / 0.13) ** 2 +
+                                (normalized_radius / 0.11) ** 2
+                            ))
+                            ranking = support * (0.35 + 0.65 * fit)
+                            if ranking > best_ranking:
+                                best_ranking = ranking
                                 best_edge = support
+                                best_fit = fit
                                 best_circle = (cx, cy, radius)
 
             geometric[stage] = best_edge
@@ -187,13 +206,14 @@ class PositionRecognizer:
             # A circle with no inside/outside material difference is likely
             # just a machine ring: it must not be classified as a wafer.
             score = (
-                0.65 * best_edge + 0.35 * material
+                (0.57 * best_edge + 0.43 * material) * (0.2 + 0.8 * best_fit)
                 if material >= self.min_material else 0.0
             )
             scores[stage] = round(float(score), 4)
             self.last_features[stage] = {
                 "edge": round(best_edge, 4),
                 "material": round(material, 4),
+                "fit": round(best_fit, 4),
             }
             if best_circle is not None:
                 circles[stage] = best_circle
@@ -204,7 +224,7 @@ class PositionRecognizer:
         if (
             geometric[leader] < self.min_support
             or self.last_features[leader]["material"] < self.min_material
-            or best < 0.38
+            or best < 0.28
             or best - scores[runner] < self.min_margin
         ):
             return "UNKNOWN", best, scores
