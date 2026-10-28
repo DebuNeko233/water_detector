@@ -24,6 +24,8 @@ jobs:
       - run: pnpm install --no-lockfile
       - run: uv sync --project backend --group dev
       - run: uv run --project backend pytest -q
+      - name: Verify Electron-managed development Python (handshake/auth/shutdown)
+        run: node scripts/smoke/managed-dev.mjs
       - run: pnpm test:scripts
       - name: Verify automatic uv download with no global uv
         run: node --test scripts/tests/uv-bootstrap.test.mjs
@@ -82,6 +84,8 @@ jobs:
       - run: pnpm install --no-lockfile
       - run: uv sync --project backend --group dev
       - run: uv run --project backend pytest -q
+      - name: Verify Electron-managed development Python (handshake/auth/shutdown)
+        run: node scripts/smoke/managed-dev.mjs
       - run: pnpm test:scripts
       - run: pnpm typecheck
       - run: pnpm exec electron-vite build

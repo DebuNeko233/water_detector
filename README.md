@@ -26,7 +26,9 @@ pnpm setup
 pnpm dev
 ```
 
-`pnpm dev` 同时启动 Electron 和 Python，本机开发只显示一个 Electron 应用窗口；额外的 Python 控制台默认隐藏。要观察 Python 日志可运行 `pnpm dev:combined`。开发时也可分别执行 `pnpm dev:backend` 和 `pnpm dev:frontend`。
+`pnpm dev` **由 Electron 主进程自动启动并管理 Python**，启动、关闭时与窗口同步；不再通过两个独立终端同时争用固定的 8765 端口。第一次运行会自动安装缺失的 backend/.venv。默认无额外 Python 控制台；`pnpm dev:combined` 将 Python 调试日志输出到现有终端。
+
+独立调试：`pnpm dev:backend` 单独启动 Python（端口 8765）；在另一终端运行 `pnpm dev:ui-only`，只启动 Electron 并明确连接这个已存在的后端，关闭前端不会误杀独立的 Python。`pnpm dev:frontend` 会单独启动 Electron，但 Electron **仍自动启动属于自己的 Python**。如遇 `Python 开发环境未安装`，先执行 `pnpm setup`。
 
 **发行版：** 运行 `pnpm build`（Windows x64），生成 `dist/win-unpacked/WaferWaterDetector.exe`。与模板一样打包独立 CPython、自动选择空闲 localhost 端口、随机 session/control token，通过就绪 JSON 握手验证子进程身份。关闭 Electron 时先请求受鉴权的 `/internal/shutdown`，超时只清理本窗口拥有的 Python 进程；强制关闭 Electron 时 Python 父进程监视器也会退出。没有额外 Python 控制台。发行版不依赖预装 Python。
 
