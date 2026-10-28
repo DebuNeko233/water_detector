@@ -59,7 +59,8 @@ class FilePlayback:
         return {
             "state": "IDLE", "frame_index": -1, "fps": 0.0,
             "stage": "UNKNOWN", "position_confidence": 0.0,
-            "position_scores": {}, "wafer_center": None, "wafer_radius": None,
+            "position_scores": {}, "position_features": {},
+            "wafer_center": None, "wafer_radius": None,
             "roi": None, "recognition_mode": "single",
             "status": "IDLE", "s_water": None, "history": [],
             "reason": "", "revision": 0,
@@ -211,6 +212,7 @@ class FilePlayback:
                 stage=stage,
                 position_confidence=result.get("position_confidence", 0.0),
                 position_scores=result.get("position_scores", {}),
+                position_features=result.get("position_features", {}),
                 wafer_center=result.get("wafer_center"),
                 wafer_radius=result.get("wafer_radius"),
                 roi=roi, recognition_mode=request.stage_mode,
