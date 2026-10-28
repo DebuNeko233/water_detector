@@ -75,3 +75,15 @@
   .monitor-grid .video-panel { height: min(65vh, 560px); min-height: 360px; }
   .monitor-grid .right-rail { overflow: visible; }
 }
+
+/* Calibration page: video and test timeline remain in the viewport while the
+ * long numeric parameter list scrolls independently on the right. */
+.content.debug-content { min-height: 0; overflow: hidden; }
+.debug-grid { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.debug-left, .debug-right { min-height: 0; overflow-y: auto; padding-right: 3px; }
+.debug-left .roi-view { max-height: min(48dvh, 460px); }
+@media (max-width: 890px) {
+  .content.debug-content { overflow-y: auto; }
+  .debug-grid { height: auto; grid-template-rows: auto; }
+  .debug-left, .debug-right { overflow: visible; }
+}
