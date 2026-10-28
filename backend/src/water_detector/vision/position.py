@@ -157,7 +157,7 @@ class PositionRecognizer:
         # score than one containing the whole disk with minimal background.
         return float(np.clip(coverage - 1.3 * spill, 0, 1))
 
-    def classify(self, frame: np.ndarray) -> tuple[str, float, dict[str, float]]:
+    def classify(self, frame: np.ndarray, nozzle_mask: np.ndarray | None = None) -> tuple[str, float, dict[str, float]]:
         """(stage or UNKNOWN, best combined support, per-stage combined support)."""
         self.last_center = None
         self.last_radius = None
@@ -188,7 +188,9 @@ class PositionRecognizer:
             cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             if scale < 1.0 else frame
         )
-        nozzle = nozzle_occlusion_mask(frame, self.calibrations)
+        nozzle = nozzle_mask if nozzle_mask is not None else nozzle_occlusion_mask(frame, self.calibrations)
+        if nozzle.shape != frame.shape[:2]:
+            raise ValueError("Nozzle mask shape does not match frame")
         self.last_nozzle_fraction = round(float(nozzle.mean()), 5)
         if scale < 1.0:
             nozzle = cv2.resize(nozzle.astype(np.uint8),
