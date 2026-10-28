@@ -31,6 +31,7 @@ class PlaybackRequest(BaseModel):
     stage_mode: Literal["single", "auto"] = "single"
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
     show_algorithm_roi: bool = True
+    show_nozzle_mask: bool = False
 
 
 class FilePlayback:
@@ -62,6 +63,7 @@ class FilePlayback:
             "position_scores": {}, "position_features": {},
             "wafer_center": None, "wafer_radius": None,
             "roi": None, "recognition_mode": "single",
+            "nozzle_excluded_pixels": 0, "nozzle_excluded_fraction": 0.0,
             "status": "IDLE", "s_water": None, "history": [],
             "reason": "", "revision": 0,
         }
@@ -191,7 +193,8 @@ class FilePlayback:
     def _publish(self, frame, index: int, fps: float, pipeline: InspectionPipeline,
                  request: PlaybackRequest) -> None:
         packet = FramePacket(index, index / fps, frame, request.source.address, fps)
-        result, visual = pipeline.process(packet, show_roi=request.show_algorithm_roi)
+        result, visual = pipeline.process(packet, show_roi=request.show_algorithm_roi,
+                                          show_nozzle_mask=request.show_nozzle_mask)
         stage = result.get("stage", "UNKNOWN")
         calibration = pipeline.cfg.calibrations.get(stage)
         roi = None
@@ -216,6 +219,8 @@ class FilePlayback:
                 wafer_center=result.get("wafer_center"),
                 wafer_radius=result.get("wafer_radius"),
                 roi=roi, recognition_mode=request.stage_mode,
+                nozzle_excluded_pixels=result.get("nozzle_excluded_pixels", 0),
+                nozzle_excluded_fraction=result.get("nozzle_excluded_fraction", 0.0),
                 state="PAUSED" if self._paused else "PLAYING",
             )
 
