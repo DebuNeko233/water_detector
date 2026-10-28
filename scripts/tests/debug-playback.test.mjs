@@ -15,7 +15,7 @@ test('file playback and live tuning live only on the calibration and debug page'
   assert.match(debug, /showCalibrationEditor/)
   assert.match(debug, /v-if="showCalibrationEditor"[^>]+@pointerdown=/)
   assert.match(debug, /showAlgorithmRoi/)
-  assert.match(debug, /实际使用 ROI/)
+  assert.match(debug, /实际使用的 ROI/)
   assert.match(debug, /\/api\/position\/reference\/capture/)
   assert.match(debug, /referenceCount/)
   assert.match(debug, /每个位置至少 5 张/)
