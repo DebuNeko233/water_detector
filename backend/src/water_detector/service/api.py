@@ -20,6 +20,7 @@ from water_detector.detector.water import WaterDetector
 from water_detector.render.overlay import render_overlay, jpeg_bytes
 from water_detector.task.monitor import MonitorTask
 from water_detector.task.file_playback import FilePlayback, PlaybackRequest
+from water_detector.task.auto_test import AutoVideoTest
 from water_detector.service.shutdown import ShutdownController, is_authorized
 
 
@@ -60,6 +61,7 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
     manager = manager or ConfigManager()
     monitor = MonitorTask(manager)
     playback = FilePlayback()
+    auto_test = AutoVideoTest()
     shutdown = shutdown or ShutdownController()
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -68,12 +70,14 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         # Wait in a worker thread so that WebSocket/HTTP resources can unwind.
         await asyncio.to_thread(monitor.wait_for_exit, 4.0)
         await asyncio.to_thread(playback.stop)
+        await asyncio.to_thread(auto_test.stop)
 
     app = FastAPI(title="Wafer Water Detection API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "null"],
                        allow_methods=["GET", "POST", "PUT"], allow_headers=["Content-Type"])
     app.state.monitor = monitor
     app.state.playback = playback
+    app.state.auto_test = auto_test
     app.state.config_manager = manager
 
     @app.get("/api/health")
@@ -167,6 +171,21 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
 
     # Local-file playback for interactive algorithm testing. This session is
     # entirely independent of the production monitor task and its recordings.
+    @app.post("/api/debug/auto-test/start")
+    def auto_test_start(req: PlaybackRequest):
+        try:
+            return auto_test.start(req)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/debug/auto-test/status")
+    def auto_test_status():
+        return auto_test.snapshot()
+
+    @app.post("/api/debug/auto-test/stop")
+    def auto_test_stop():
+        return auto_test.stop()
+
     @app.post("/api/playback/start")
     def playback_start(req: PlaybackRequest):
         try:
