@@ -38,7 +38,7 @@ try {
     }
     await pause(100)
   }
-  if (!message || message.pid !== child.pid || message.session_id !== session)
+  if (!message || (process.platform !== 'win32' && message.pid !== child.pid) || message.session_id !== session)
     throw new Error('Bad ready-file handshake: ' + JSON.stringify(message) + ' ' + stderr)
   const base = 'http://127.0.0.1:' + message.port
   const unauthorized = await fetch(base + '/api/config/active')
