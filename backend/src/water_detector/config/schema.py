@@ -63,7 +63,7 @@ class AppConfig(BaseModel):
             if isinstance(refs, dict):
                 value = dict(value)
                 value["position_references"] = {
-                    stage: [path] if isinstance(path, str) and path else paths
+                    stage: [paths] if isinstance(paths, str) and paths else paths
                     for stage, paths in refs.items()
                 }
         return value
