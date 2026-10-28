@@ -17,6 +17,13 @@ export const useSystemStore = defineStore('system', () => {
     if (polling) return
     polling = true
     try {
+      // Prevent hundreds of ECONNREFUSED IPC errors while Python is booting.
+      // Only poll business endpoints after the Electron main process reports READY.
+      const backendStatus = await window.desktop.backend.status()
+      if (backendStatus !== 'ready') {
+        connected.value = false
+        return
+      }
       monitor.value = await request<MonitorState>('/api/monitor/status')
       connected.value = true
       // Python may become ready AFTER App.vue first mounted.
