@@ -27,7 +27,7 @@ class PositionRecognizer:
 
     def __init__(
         self,
-        references: dict[str, str],
+        references: dict[str, list[str]],
         calibrations: dict[str, Calibration] | None = None,
         *,
         min_similarity: float = 0.78,
