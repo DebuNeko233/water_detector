@@ -18,12 +18,25 @@ export interface MonitorState {
   timestamp_s?:number; abnormal_run_s?:number; max_sector_idx?:number
   history?:number[]; processed_frames?:number; reason?:string; position_confidence?:number
 }
+/**
+ * Electron IPC uses structured clone; Vue reactive Proxy objects cannot be cloned.
+ * Transport only JSON data, which is also what the FastAPI endpoints accept.
+ * Serialize BEFORE calling the contextBridge boundary (not in preload/main).
+ * This also strips nested reactive proxies in calibration and detector settings.
+ */
+function serializeBody(body: unknown): { json: string | undefined; plain: unknown } {
+  if (body === undefined) return { json: undefined, plain: undefined }
+  const json = JSON.stringify(body)
+  return { json, plain: json === undefined ? undefined : JSON.parse(json) as unknown }
+}
+
 export async function request<T>(path:string, method='GET', body?:unknown):Promise<T> {
+  const { json, plain } = serializeBody(body)
   if (typeof window !== 'undefined' && window.desktop?.backend) {
     if (method !== 'GET' && method !== 'POST') throw new Error('Unsupported API method')
-    return window.desktop.backend.request<T>(method, path, body)
+    return window.desktop.backend.request<T>(method, path, plain)
   }
-  const response=await fetch(BASE+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)})
+  const response=await fetch(BASE+path,{method,headers:{'Content-Type':'application/json'},body:json})
   if(!response.ok){const e=await response.text();throw new Error(e)}
   return response.json() as Promise<T>
 }
