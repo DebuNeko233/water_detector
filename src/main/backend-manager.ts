@@ -29,7 +29,7 @@ function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
   })
 }
 
-/** Owns Python only in packaged mode. Development backends remain independent. */
+/** Electron owns Python in both development and production; explicit external mode is debug-only. */
 export class BackendManager {
   private child: ChildProcess | null = null
   private endpoint = ''
@@ -49,7 +49,7 @@ export class BackendManager {
 
   connected(): void { this.change('ready') }
   disconnected(): void {
-    if (!app.isPackaged && !this.stopping) this.change('offline')
+    if (!this.stopping) this.change('offline')
   }
   get baseUrl(): string {
     if (!this.endpoint) throw new Error('Python backend is not ready')
@@ -75,16 +75,31 @@ export class BackendManager {
     return executable
   }
 
+  /** In development, uv installs the editable package into backend/.venv. */
+  private developmentPython(): string {
+    const relative = process.platform === 'win32'
+      ? path.join('Scripts', 'python.exe')
+      : path.join('bin', 'python')
+    const executable = path.resolve(app.getAppPath(), 'backend', '.venv', relative)
+    if (!fs.existsSync(executable)) {
+      throw new Error('Python 开发环境未安装，请在仓库根目录运行 pnpm setup，再运行 pnpm dev。')
+    }
+    return executable
+  }
+
   async start(): Promise<void> {
-    // 开发时 Python 由单独终端拥有；Electron 只能连接，绝不能代替用户管理它。
-    if (!app.isPackaged) {
+    // Debug-only opt-in: reuse an independently started Python server.
+    // The regular desktop always spawns and owns its own child, even in development.
+    if (!app.isPackaged && process.env.WAFER_USE_EXTERNAL_BACKEND === '1') {
       this.endpoint = 'http://127.0.0.1:8765'
+      this.change('starting')
       try {
         await this.health()
         this.change('ready')
-      } catch {
-        this.latestError = 'Python 开发服务尚未连接。请运行 pnpm dev:backend。'
+      } catch (error) {
+        this.latestError = '独立 Python 尚未运行，请先执行 pnpm dev:backend。'
         this.change('offline')
+        throw new Error(this.latestError, { cause: error })
       }
       return
     }
@@ -92,7 +107,7 @@ export class BackendManager {
     this.change('starting')
     let python: string
     try {
-      python = this.packagedPython()
+      python = app.isPackaged ? this.packagedPython() : this.developmentPython()
     } catch (error) {
       this.latestError = String(error)
       this.change('failed')
@@ -107,10 +122,11 @@ export class BackendManager {
     this.controlToken = randomBytes(32).toString('hex')
 
     // -I 禁用用户级包路径；APP_PARENT_PID 使 Python 能察觉 Electron 意外退出。
+    const debugConsole = !app.isPackaged && process.env.WAFER_DEBUG_CONSOLE === '1'
     const child = spawn(python, ['-I', '-m', 'sample_backend'], {
       cwd: path.dirname(python),
-      windowsHide: true,
-      stdio: 'ignore',
+      windowsHide: !debugConsole,
+      stdio: debugConsole ? ['ignore', 'inherit', 'inherit'] : 'ignore',
       env: {
         ...process.env,
         APP_PARENT_PID: String(process.pid),
@@ -156,7 +172,7 @@ export class BackendManager {
         }
         await pause(150)
       }
-      throw new Error('Python startup timeout')
+      throw new Error('Python startup timeout. 查看后端日志或设置 WAFER_DEBUG_CONSOLE=1')
     } catch (error) {
       console.error('Python startup failed:', error)
       this.latestError = String(error)
