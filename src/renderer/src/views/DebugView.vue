@@ -17,6 +17,7 @@ interface PlaybackState {
  stage:'P1'|'P2'|'P3'|'UNKNOWN'
  position_confidence:number
  position_scores:Record<string,number>
+ position_features:Record<string,{edge:number;material:number}>
  wafer_center:[number,number]|null
  wafer_radius:number|null
  recognition_mode:'single'|'auto'
@@ -34,6 +35,7 @@ const showAlgorithmRoi=ref(true)
 const recognizedStage=ref('UNKNOWN')
 const matchScore=ref(0)
 const matchScores=ref<Record<string,number>>({})
+const positionFeatures=ref<Record<string,{edge:number;material:number}>>({})
 const waferCenter=ref<[number,number]|null>(null)
 const effectiveRoi=ref<Calibration|null>(null)
 const previewImage=ref('')
@@ -138,6 +140,7 @@ async function pollPlayback():Promise<void>{
   recognizedStage.value=result.stage || 'UNKNOWN'
   matchScore.value=result.position_confidence || 0
   matchScores.value=result.position_scores || {}
+  positionFeatures.value=result.position_features || {}
   waferCenter.value=result.wafer_center || null
   effectiveRoi.value=result.roi || null
   if(result.jpeg_base64){
@@ -343,18 +346,18 @@ onBeforeUnmount(()=>{
       </div>
       <div class="debug-stage-result">
         <div><span class="muted">实际使用 ROI</span><strong>{{recognizedStage}}</strong></div>
-        <div><span class="muted">圆形边缘匹配度（非概率）</span><strong>{{scoreText}}</strong></div>
+        <div><span class="muted">材质与边缘综合得分（非概率）</span><strong>{{scoreText}}</strong></div>
         <div><span class="muted">检测到的晶圆圆心</span><strong>{{waferCenter ? 'X='+waferCenter[0].toFixed(0)+'，Y='+waferCenter[1].toFixed(0) : '无法确定'}}</strong></div>
         <div><span class="muted">使用的 ROI 坐标</span><strong>{{roiSummary}}</strong></div>
         <div><span class="muted">检测状态</span><strong>{{previewStatus}}</strong></div>
       </div>
       <div v-if="isAuto" class="muted">
-        P1 位置={{(matchScores.P1 ?? 0).toFixed(3)}} · P2 位置={{(matchScores.P2 ?? 0).toFixed(3)}} · P3 位置={{(matchScores.P3 ?? 0).toFixed(3)}}
+        <span v-for="pos in ['P1','P2','P3']" :key="pos" style="margin-right:12px">{{pos}} 综合={{(matchScores[pos] ?? 0).toFixed(3)}} / 边缘={{(positionFeatures[pos]?.edge ?? 0).toFixed(3)}} / 材质={{(positionFeatures[pos]?.material ?? 0).toFixed(3)}}</span>
       </div>
       <el-alert v-if="isAuto && !autoRoiReady"
         title="请先分别标定 P1/P2/P3 三个不同的晶圆位置（圆心与半径），并确保标定分辨率与视频一致；无需采集参考照片。"
         type="warning" :closable="false" show-icon />
-      <p class="hint">根据画面中的晶圆圆形边界与三个已标定位置的几何匹配度选择 ROI，不使用整帧图片相似度。圆环不清晰、多个位置难以区分或晶圆不在标定区域时显示 UNKNOWN/PAUSED。打开“显示算法 ROI”可验证实际切换。</p>
+      <p class="hint">融合圆形边缘的连续性与晶圆内外颜色、亮度及反光分布差异，选择三个预设位置中的 ROI；不需要参考照片。材质差异不足、边界被遮挡或多个位置难以区分时返回 UNKNOWN/PAUSED。下方分数均为视觉证据，并非概率；请结合“显示算法 ROI”核对。</p>
     </div>
     <div v-if="isVideoFile" class="video-timeline">
      <div class="timeline-top">
