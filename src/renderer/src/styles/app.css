@@ -87,3 +87,37 @@
   .debug-grid { height: auto; grid-template-rows: auto; }
   .debug-left, .debug-right { overflow: visible; }
 }
+
+/* Stand-alone recognition status stays legible without painting calibration
+ * controls over the video image. The detected ROI can be toggled separately. */
+.debug-position-panel {
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: #f6f9fc;
+  border: 1px solid #dce8f1;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.debug-position-panel .toolbar { margin-bottom: 0; }
+.debug-stage-result {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 10px;
+}
+.debug-stage-result > div {
+  padding: 8px 10px;
+  background: #fff;
+  border-radius: 6px;
+  min-width: 0;
+}
+.debug-stage-result strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .debug-stage-result { grid-template-columns: 1fr; }
+}
