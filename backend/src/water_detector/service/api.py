@@ -1,6 +1,8 @@
 """Localhost-only HTTP control plane. Python owns processing, frontend owns display."""
 from __future__ import annotations
 import asyncio
+import hmac
+import os
 from contextlib import asynccontextmanager
 import base64
 from pathlib import Path
@@ -170,6 +172,12 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
     def monitor_status():
         return monitor.snapshot()
 
+    @app.get("/api/monitor/frame")
+    def monitor_frame():
+        # JPEG travels through Electron's authenticated IPC rather than unauthenticated <img>.
+        frame = monitor.preview()
+        return {"jpeg_base64": base64.b64encode(frame).decode("ascii") if frame else None}
+
     @app.get("/api/monitor/preview.mjpg")
     async def preview_stream():
         async def frames():
@@ -182,6 +190,10 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
 
     @app.websocket("/ws/monitor")
     async def websocket_monitor(ws: WebSocket):
+        expected = os.environ.get("APP_SESSION_TOKEN", "")
+        if expected and not hmac.compare_digest(ws.headers.get("x-session-token", ""), expected):
+            await ws.close(code=4401)
+            return
         await ws.accept()
         try:
             while True:

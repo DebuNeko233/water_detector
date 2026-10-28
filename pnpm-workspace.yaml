@@ -1,0 +1,8 @@
+packages: []
+allowBuilds:
+  electron: true
+  esbuild: true
+  electron-winstaller: true
+
+# Template mode: resolve from package.json ranges; do not read/create a lockfile.
+lockfile: false

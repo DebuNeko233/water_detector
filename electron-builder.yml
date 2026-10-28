@@ -1,0 +1,15 @@
+appId: com.debuneko.wafer-water-detector
+productName: WaferWaterDetector
+# Electron 前端编译文件归档进 app.asar；可执行的 CPython 必须作为额外资源放在外面。
+asar: true
+directories:
+  output: dist
+files:
+  - out/**
+  - package.json
+# 把打包好的独立 Python 复制到 resources/backend，供 BackendManager 读取 manifest.json。
+extraResources:
+  - from: build/backend
+    to: backend
+win:
+  artifactName: WaferWaterDetector-${version}-${arch}.${ext}
