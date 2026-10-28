@@ -46,7 +46,8 @@ class AppConfig(BaseModel):
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
     source: SourceConfig = Field(default_factory=SourceConfig)
-    # Single is the regression-compatible mode; auto requires verified P1/P2/P3 references.
+    # Auto selects among three distinct calibrated wafer ROI locations.
     stage_mode: Literal["single", "auto"] = "single"
     selected_stage: Literal["P1", "P2", "P3"] = "P1"
+    # Kept to read pre-migration config files. Geometry-based auto ignores it.
     position_references: dict[str, str] = Field(default_factory=dict)
