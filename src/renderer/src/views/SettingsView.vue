@@ -27,9 +27,9 @@ async function chooseVideo(){const p=await window.desktop?.system.selectFile();i
   <el-alert v-if="(draft.source.kind==='file'||draft.source.kind==='rtsp')&&!draft.source.address.trim()"
     title="尚未设置视频源：请选择本地视频或填写 RTSP 地址，然后点击下方「保存配置」。"
     type="warning" show-icon :closable="false" style="margin-bottom:14px"/>
-  <el-form-item label="工位识别"><el-radio-group v-model="draft.stage_mode"><el-radio value="single">单工位手动指定</el-radio><el-radio value="auto">自动识别（实验性）</el-radio></el-radio-group></el-form-item>
+  <el-form-item label="工位识别"><el-radio-group v-model="draft.stage_mode"><el-radio value="single">单工位手动指定</el-radio><el-radio value="auto">参考截图自动选 ROI</el-radio></el-radio-group></el-form-item>
   <el-form-item v-if="draft.stage_mode==='single'" label="当前工位"><el-radio-group v-model="draft.selected_stage"><el-radio-button value="P1">P1</el-radio-button><el-radio-button value="P2">P2</el-radio-button><el-radio-button value="P3">P3</el-radio-button></el-radio-group></el-form-item>
   <el-alert v-if="draft.source.kind==='industrial'" title="需确定厂商相机 SDK 后提供适配器；该类型当前不支持连接" type="warning" :closable="false"/>
-  <el-alert v-if="draft.stage_mode==='auto'" title="自动工位识别为实验性功能，未标定三个位置的参考图时会输出 UNKNOWN/PAUSED" type="warning" :closable="false" style="margin-top:12px"/>
+  <el-alert v-if="draft.stage_mode==='auto'" title="在标定与调试页面为 P1/P2/P3 每个位置采集至少 5 张参考截图并保存，自动模式依据截图相似度选择 ROI；图库不完整或画面难以区分时输出 UNKNOWN/PAUSED" type="warning" :closable="false" style="margin-top:12px"/>
   <el-form-item style="margin-top:18px"><el-button type="primary" :loading="saving" :disabled="saving" @click="save">保存配置</el-button></el-form-item>
  </el-form></div></template>

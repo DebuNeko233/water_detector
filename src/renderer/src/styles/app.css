@@ -12,3 +12,112 @@
 .timeline-frame .el-input-number{width:116px}
 .video-timeline .hint{margin-bottom:0}
 @media(max-width:1230px){.timeline-bottom{align-items:start}.timeline-frame{width:100%}}
+
+
+/* The video and seek bar must fit inside the actual Electron window height.
+ * Without min-height:0, flex/grid children use min-content size and escape the
+ * viewport whenever the image or side panels are tall. */
+.app-shell { height: 100dvh; min-height: 0; }
+.content.monitor-content { min-height: 0; overflow: hidden; }
+.monitor-grid {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+.monitor-grid .video-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+.monitor-grid .video-area {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+.monitor-grid .video-area img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+.monitor-grid .right-rail { min-height: 0; overflow-y: auto; padding-right: 3px; }
+.monitor-timeline {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 10px 8px 3px;
+}
+.monitor-timeline .el-slider { margin: 11px 9px 4px; width: calc(100% - 18px); }
+.monitor-timeline-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.monitor-timeline-actions .el-button { margin: 0; }
+.monitor-stage-select { width: 80px; }
+.monitor-file-hint { margin: 7px 2px 0; line-height: 1.4; font-size: 12px; overflow-wrap: anywhere; }
+.video-mode-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  background: rgba(15, 23, 42, 0.84);
+  color: #f0f7ff;
+  pointer-events: none;
+}
+@media (max-width: 890px) {
+  .content.monitor-content { overflow-y: auto; }
+  .monitor-grid { grid-template-columns: 1fr; grid-template-rows: auto auto; height: auto; }
+  .monitor-grid .video-panel { height: min(65vh, 560px); min-height: 360px; }
+  .monitor-grid .right-rail { overflow: visible; }
+}
+
+/* Calibration page: video and test timeline remain in the viewport while the
+ * long numeric parameter list scrolls independently on the right. */
+.content.debug-content { min-height: 0; overflow: hidden; }
+.debug-grid { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.debug-left, .debug-right { min-height: 0; overflow-y: auto; padding-right: 3px; }
+.debug-left .roi-view { max-height: min(48dvh, 460px); }
+@media (max-width: 890px) {
+  .content.debug-content { overflow-y: auto; }
+  .debug-grid { height: auto; grid-template-rows: auto; }
+  .debug-left, .debug-right { overflow: visible; }
+}
+
+/* Stand-alone recognition status stays legible without painting calibration
+ * controls over the video image. The detected ROI can be toggled separately. */
+.debug-position-panel {
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: #f6f9fc;
+  border: 1px solid #dce8f1;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.debug-position-panel .toolbar { margin-bottom: 0; }
+.debug-stage-result {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 10px;
+}
+.debug-stage-result > div {
+  padding: 8px 10px;
+  background: #fff;
+  border-radius: 6px;
+  min-width: 0;
+}
+.debug-stage-result strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .debug-stage-result { grid-template-columns: 1fr; }
+}

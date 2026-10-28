@@ -17,6 +17,8 @@ class DetectorConfig(BaseModel):
     sector_count: int = Field(24, ge=4, le=180)
     sector_threshold: float = Field(0.05, ge=0.0, le=1.0)
     blur_ksize: int = Field(3, ge=0, le=15)
+    # Exclude the moving cleaning nozzle and its short motion trail from S_water.
+    nozzle_filter_enabled: bool = True
 
     @model_validator(mode="after")
     def validate_geometry(self):
@@ -46,7 +48,22 @@ class AppConfig(BaseModel):
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
     source: SourceConfig = Field(default_factory=SourceConfig)
-    # Single is the regression-compatible mode; auto requires verified P1/P2/P3 references.
+    # Automatic stage selection compares >= 5 saved screenshots per stage.
     stage_mode: Literal["single", "auto"] = "single"
     selected_stage: Literal["P1", "P2", "P3"] = "P1"
-    position_references: dict[str, str] = Field(default_factory=dict)
+    # Per-stage pools of reference screenshots. Older active.json files used
+    # one path per stage; those entries are automatically migrated to lists.
+    position_references: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_legacy_reference_paths(cls, value):
+        if isinstance(value, dict):
+            refs = value.get("position_references")
+            if isinstance(refs, dict):
+                value = dict(value)
+                value["position_references"] = {
+                    stage: [paths] if isinstance(paths, str) and paths else paths
+                    for stage, paths in refs.items()
+                }
+        return value

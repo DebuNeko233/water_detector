@@ -1,8 +1,9 @@
 """Faithful adaptation of the user's main.py WaterDetector.
 
 This module intentionally keeps the original calculation sequence and defaults.
-Do not add nozzle masks or brightness normalization here: those are separate
-future pipeline changes and must not silently change regression results.
+The original no-mask calculation stays unchanged. An optional exclusion mask
+allows the upstream moving-nozzle filter to remove tool pixels from the
+valid ROI, avoiding false persistent-water scores.
 """
 from __future__ import annotations
 from collections import deque
@@ -18,6 +19,7 @@ class WaterDetector:
         self.calib, self.cfg = calib, cfg
         self.history_frames = max(2, int(round(cfg.history_seconds * self.fps)))
         self.activity_history = deque(maxlen=self.history_frames)
+        self.valid_history = deque(maxlen=self.history_frames)
         self.score_history = deque(maxlen=max(10, int(round(5.0 * self.fps))))
         self.prev_gray = None
         self.abnormal_run_s = 0.0
@@ -57,11 +59,12 @@ class WaterDetector:
 
     def reset(self):
         self.activity_history.clear()
+        self.valid_history.clear()
         self.prev_gray = None
         self.abnormal_run_s = self.recover_run_s = 0.0
         self.status = "WARMUP"
 
-    def process(self, frame):
+    def process(self, frame, exclusion_mask=None):
         gray = self._prep_gray(frame)
         dt = 1.0 / self.fps
         if self.prev_gray is None:
@@ -71,20 +74,45 @@ class WaterDetector:
         cur = gray.astype(np.float32)
         pre = self.prev_gray.astype(np.float32)
         signed_diff = cur - pre
-        global_change = float(np.median(signed_diff[self.roi]))
+        if exclusion_mask is None:
+            valid_roi = self.roi
+        else:
+            if exclusion_mask.shape != self.roi.shape:
+                raise ValueError("Nozzle mask must have the video frame shape")
+            valid_roi = self.roi & ~exclusion_mask.astype(bool)
+        # A nearly fully occluded wafer has insufficient evidence, not OK.
+        valid_count = int(np.count_nonzero(valid_roi))
+        if valid_count < max(100, int(self.roi_count * 0.65)):
+            self.prev_gray = gray
+            self.activity_history.clear()
+            self.valid_history.clear()
+            self.score_history.append(0.0)
+            return {**self._empty_result(), "status": "PAUSED",
+                    "excluded_pixels": self.roi_count - valid_count}
+        global_change = float(np.median(signed_diff[valid_roi]))
         diff = np.abs(signed_diff - global_change)
-        active = (diff > self.cfg.diff_threshold) & self.roi
+        active = (diff > self.cfg.diff_threshold) & valid_roi
         self.activity_history.append(active)
+        self.valid_history.append(valid_roi.copy())
         self.prev_gray = gray
         if len(self.activity_history) < self.history_frames:
             self.score_history.append(0.0)
             return self._empty_result(active=active, diff=diff)
         stack = np.stack(self.activity_history, axis=0)
         persistence = stack.mean(axis=0)
-        persistent = (persistence >= self.cfg.persistence_threshold) & self.roi
-        s_water = float(np.count_nonzero(persistent) / self.roi_count)
-        sector_scores = [float(np.count_nonzero(persistent & mask) / count)
-                         for mask, count in zip(self.sector_masks, self.sector_counts)]
+        persistent = (persistence >= self.cfg.persistence_threshold) & valid_roi
+        if exclusion_mask is not None:
+            # A pixel that was hidden by the nozzle for most of the history
+            # cannot be treated as persistent water when it reappears.
+            visible = np.stack(self.valid_history, axis=0).sum(axis=0)
+            persistent &= visible >= max(2, int(np.ceil(self.history_frames * 0.75)))
+        denominator = valid_count if exclusion_mask is not None else self.roi_count
+        s_water = float(np.count_nonzero(persistent) / denominator)
+        sector_scores = [
+            float(np.count_nonzero(persistent & mask) /
+                  max(1, int(np.count_nonzero(mask & valid_roi))))
+            for mask in self.sector_masks
+        ]
         max_sector_idx = int(np.argmax(sector_scores)) if sector_scores else -1
         max_sector_score = sector_scores[max_sector_idx] if max_sector_idx >= 0 else 0.0
         instant_abnormal = s_water >= self.cfg.s_water_threshold
@@ -112,7 +140,8 @@ class WaterDetector:
                     persistent=persistent, persistence=persistence, diff=diff,
                     global_change=global_change, sector_scores=sector_scores,
                     max_sector_idx=max_sector_idx, max_sector_score=max_sector_score,
-                    abnormal_run_s=self.abnormal_run_s, history_ready=True)
+                    abnormal_run_s=self.abnormal_run_s, history_ready=True,
+                    excluded_pixels=self.roi_count - valid_count)
 
     def _empty_result(self, active=None, diff=None):
         if self.status == "WARMUP" and len(self.activity_history) >= self.history_frames:

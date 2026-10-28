@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import uuid
 from contextlib import asynccontextmanager
 import base64
 from pathlib import Path
@@ -19,6 +20,8 @@ from water_detector.camera.metadata import probe_file_video
 from water_detector.detector.water import WaterDetector
 from water_detector.render.overlay import render_overlay, jpeg_bytes
 from water_detector.task.monitor import MonitorTask
+from water_detector.task.file_playback import FilePlayback, PlaybackRequest
+from water_detector.task.auto_test import AutoVideoTest
 from water_detector.service.shutdown import ShutdownController, is_authorized
 
 
@@ -28,6 +31,16 @@ class PreviewRequest(BaseModel):
     calibration: Calibration
     detector: DetectorConfig
     frame_index: int = Field(0, ge=0)
+
+
+class PlaybackSeekRequest(BaseModel):
+    frame_index: int = Field(ge=0)
+
+
+class ReferenceCaptureRequest(BaseModel):
+    source: SourceConfig
+    frame_index: int = Field(ge=0)
+    stage: str
 
 
 class RefFrameRequest(BaseModel):
@@ -54,6 +67,8 @@ def read_file_frame(req: RefFrameRequest):
 def create_app(manager: ConfigManager | None = None, shutdown: ShutdownController | None = None) -> FastAPI:
     manager = manager or ConfigManager()
     monitor = MonitorTask(manager)
+    playback = FilePlayback()
+    auto_test = AutoVideoTest()
     shutdown = shutdown or ShutdownController()
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -61,11 +76,15 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         monitor.stop()
         # Wait in a worker thread so that WebSocket/HTTP resources can unwind.
         await asyncio.to_thread(monitor.wait_for_exit, 4.0)
+        await asyncio.to_thread(playback.stop)
+        await asyncio.to_thread(auto_test.stop)
 
     app = FastAPI(title="Wafer Water Detection API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "null"],
                        allow_methods=["GET", "POST", "PUT"], allow_headers=["Content-Type"])
     app.state.monitor = monitor
+    app.state.playback = playback
+    app.state.auto_test = auto_test
     app.state.config_manager = manager
 
     @app.get("/api/health")
@@ -119,6 +138,35 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/api/position/reference/capture")
+    def reference_capture(req: ReferenceCaptureRequest):
+        """Persist a raw source-video screenshot for a single reference pool.
+
+        The API only returns its stored filename; it does NOT change active
+        configuration. User must save the draft to use it for real monitoring.
+        """
+        if req.stage not in ("P1", "P2", "P3"):
+            raise HTTPException(400, "stage must be P1/P2/P3")
+        try:
+            frame = read_file_frame(RefFrameRequest(
+                source=req.source, frame_index=req.frame_index
+            ))
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        directory = manager.home / "position_references" / req.stage
+        directory.mkdir(parents=True, exist_ok=True)
+        ok, encoded = cv2.imencode(".png", frame)
+        if not ok:
+            raise HTTPException(500, "Reference image encode failed")
+        destination = directory / (
+            f"{req.stage}_frame_{req.frame_index:08d}_{uuid.uuid4().hex}.png"
+        )
+        destination.write_bytes(encoded.tobytes())
+        return {
+            "stage": req.stage, "frame_index": req.frame_index,
+            "path": str(destination),
+        }
+
     @app.post("/api/debug/preview")
     def debug_preview(req: PreviewRequest):
         """Replays required pre-roll with a SEPARATE detector; never touches monitor state."""
@@ -156,6 +204,65 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
                     "jpeg_base64": base64.b64encode(jpeg_bytes(overlay)).decode("ascii")}
         finally:
             cap.release()
+
+    # Local-file playback for interactive algorithm testing. This session is
+    # entirely independent of the production monitor task and its recordings.
+    @app.post("/api/debug/auto-test/start")
+    def auto_test_start(req: PlaybackRequest):
+        try:
+            return auto_test.start(req)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/debug/auto-test/status")
+    def auto_test_status():
+        return auto_test.snapshot()
+
+    @app.post("/api/debug/auto-test/stop")
+    def auto_test_stop():
+        return auto_test.stop()
+
+    @app.post("/api/playback/start")
+    def playback_start(req: PlaybackRequest):
+        try:
+            return playback.start(req)
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/playback/update")
+    def playback_update(req: PlaybackRequest):
+        # Unsaved ROI and threshold edits only affect the independent preview.
+        # The production monitor and committed app config are not modified.
+        try:
+            return playback.update(req)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/playback/seek")
+    def playback_seek(req: PlaybackSeekRequest):
+        try:
+            return playback.seek(req.frame_index)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/playback/pause")
+    def playback_pause():
+        return playback.pause()
+
+    @app.post("/api/playback/resume")
+    def playback_resume():
+        try:
+            return playback.resume()
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/playback/stop")
+    def playback_stop():
+        return playback.stop()
+
+    @app.get("/api/playback/state")
+    def playback_state(after_revision: int = -1):
+        return playback.snapshot(after_revision=after_revision)
 
     @app.post("/api/monitor/start")
     def monitor_start():
