@@ -25,3 +25,15 @@ def test_shutdown_cannot_use_session_token(monkeypatch):
     with TestClient(create_app()) as client:
         response = client.post("/internal/shutdown", headers={"x-control-token": "same-session"})
         assert response.status_code == 403
+
+
+def test_start_requires_configured_video_source(monkeypatch, tmp_path):
+    """A missing source must not start a worker or be treated as a Python crash."""
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("APP_SESSION_TOKEN", raising=False)
+    with TestClient(create_app()) as client:
+        response = client.post("/api/monitor/start")
+        assert response.status_code == 409
+        assert response.json() == {"detail": "Configure a video source first"}
+        state = client.get("/api/monitor/status").json()
+        assert state["state"] == "IDLE"
