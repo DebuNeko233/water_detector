@@ -206,10 +206,11 @@ async function runPackagedSmokeTest(): Promise<void> {
         clearTimeout(timeout); reject(new Error('Renderer failed: ' + code + ' ' + error))
       })
     })
-    const result = await browser.webContents.executeJavaScript(`(() => {
+    const result = await browser.webContents.executeJavaScript(`(async () => {
       const buttons = Array.from(document.querySelectorAll('aside nav button.nav-btn'))
       if (buttons.length !== 4) throw new Error('Expected four wafer inspection tabs')
       buttons[1].click()
+      await new Promise(resolve => setTimeout(resolve, 150))
       return document.querySelector('.topbar')?.textContent ?? ''
     })()`, true) as string
     if (!result.includes('标定与调试')) throw new Error('Wafer navigation failed')
