@@ -35,6 +35,8 @@ jobs:
       - run: pnpm exec electron-vite build
       - name: Ensure dev Electron binary is installed before packaging
         run: pnpm electron:setup
+      - name: Smoke-test real development Electron auto-start of Python
+        run: node scripts/smoke/electron-dev.mjs
       - run: pnpm build
       - name: Verify the selected Python is cached without downloads
         shell: pwsh
