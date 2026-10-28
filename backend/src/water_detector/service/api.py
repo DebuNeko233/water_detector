@@ -70,7 +70,7 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "service": "water_detector", "version": "0.1.0"}
+        return {"ok": True, "status": "ready", "service": "water_detector", "version": "0.1.0"}
 
     @app.post("/api/system/process/shutdown", status_code=202)
     def controlled_shutdown(request: Request, x_wafer_control_token: str | None = Header(default=None)):
