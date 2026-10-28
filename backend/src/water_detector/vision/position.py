@@ -49,7 +49,8 @@ class PositionRecognizer:
         self.last_radius: float | None = None
         self.last_features: dict[str, dict[str, float]] = {}
 
-    def _material_score(self, lab: np.ndarray, cx: float, cy: float, radius: float) -> float:
+    def _material_score(self, lab: np.ndarray, texture: np.ndarray,
+                        cx: float, cy: float, radius: float) -> float:
         """Robust colour/reflectance distribution separation across the rim.
 
         Several concentric samples tolerate spray, a nozzle, and highlights.
@@ -57,7 +58,7 @@ class PositionRecognizer:
         """
         height, width = lab.shape[:2]
 
-        def samples(factors: tuple[float, ...]) -> np.ndarray:
+        def samples(factors: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:
             xs = np.concatenate([
                 np.rint(cx + radius * factor * self._cos).astype(np.int32)
                 for factor in factors
@@ -67,10 +68,12 @@ class PositionRecognizer:
                 for factor in factors
             ])
             valid = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
-            return lab[ys[valid], xs[valid]]
+            return ys[valid], xs[valid]
 
-        inside = samples((0.45, 0.60, 0.72, 0.84))
-        outside = samples((1.10, 1.20, 1.30))
+        inner_y, inner_x = samples((0.45, 0.60, 0.72, 0.84))
+        outer_y, outer_x = samples((1.10, 1.20, 1.30))
+        inside = lab[inner_y, inner_x]
+        outside = lab[outer_y, outer_x]
         if min(len(inside), len(outside)) < 120:
             return 0.0
         # Lab channel scale differences: L has a much larger physical span
@@ -85,7 +88,19 @@ class PositionRecognizer:
         iq = np.percentile(inside[:, 0], [15, 50, 85])
         oq = np.percentile(outside[:, 0], [15, 50, 85])
         distribution_difference = np.linalg.norm((iq - oq) / 90.0) / np.sqrt(3.0)
-        return float(np.clip(max(color_difference, distribution_difference) / 1.2, 0, 1))
+        # Fine surface texture (water/specular micro-structure) can differ
+        # even if the wafer and surrounding metal have similar median colour.
+        # This is deliberately an inside-vs-outside statistic, not a fixed
+        # texture template, so changing illumination is more tolerable.
+        inner_texture = texture[inner_y, inner_x]
+        outer_texture = texture[outer_y, outer_x]
+        texture_difference = abs(
+            float(np.median(inner_texture) - np.median(outer_texture))
+        ) / 70.0
+        return float(np.clip(
+            max(color_difference, distribution_difference, texture_difference) / 1.2,
+            0, 1,
+        ))
 
     def classify(self, frame: np.ndarray) -> tuple[str, float, dict[str, float]]:
         """(stage or UNKNOWN, best combined support, per-stage combined support)."""
@@ -117,6 +132,10 @@ class PositionRecognizer:
         )
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        texture = cv2.magnitude(
+            cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3),
+            cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3),
+        )
         edges = cv2.dilate(
             cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 1.3), 45, 115),
             np.ones((3, 3), dtype=np.uint8),
@@ -162,7 +181,7 @@ class PositionRecognizer:
 
             geometric[stage] = best_edge
             material = (
-                self._material_score(lab, *best_circle)
+                self._material_score(lab, texture, *best_circle)
                 if best_circle is not None else 0.0
             )
             # A circle with no inside/outside material difference is likely
