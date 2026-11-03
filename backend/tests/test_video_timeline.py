@@ -168,18 +168,31 @@ def test_file_playback_seek_resumes_continuously_without_monitor_side_effects(
             time.sleep(.03)
         assert state["frame_index"] > stable["frame_index"], state
 
-        # A seek while paused STILL resumes, including backward jumps.
+        # Seek while paused must display the chosen frame WITHOUT resuming.
         client.post("/api/playback/pause")
         backward = client.post("/api/playback/seek", json={"frame_index": 5})
         assert backward.status_code == 200
         deadline = time.monotonic() + 6
+        before_revision = stable_again["revision"]
         while time.monotonic() < deadline:
             state = client.get("/api/playback/state").json()
-            if 5 <= state["frame_index"] < 18 and state["state"] == "PLAYING":
+            if state["frame_index"] == 5 and state["state"] == "PAUSED" and state["revision"] > before_revision:
                 break
             time.sleep(.03)
-        assert 5 <= state["frame_index"] < 18, state
-        assert state["state"] == "PLAYING"
+        assert state["frame_index"] == 5, state
+        assert state["state"] == "PAUSED"
+        assert state["jpeg_base64"]
+        time.sleep(.25)
+        assert client.get("/api/playback/state").json()["frame_index"] == 5
+        # A subsequent explicit resume must advance the video.
+        assert client.post("/api/playback/resume").status_code == 200
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            state = client.get("/api/playback/state").json()
+            if state["frame_index"] > 5:
+                break
+            time.sleep(.03)
+        assert state["frame_index"] > 5, state
         assert client.get("/api/monitor/status").json()["state"] == "IDLE"
         assert not (home / "results").exists()
 
