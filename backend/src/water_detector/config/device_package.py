@@ -23,6 +23,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from pydantic import ValidationError
+
 from water_detector.config.manager import ConfigManager
 from water_detector.config.schema import AppConfig
 
@@ -210,7 +212,8 @@ def read_device_package(file_path: str) -> tuple[AppConfig, dict[str, bytes], di
             })
             return config, assets, summary
     except (zipfile.BadZipFile, zipfile.LargeZipFile, KeyError, TypeError,
-            UnicodeDecodeError, json.JSONDecodeError, OSError, cv2.error) as exc:
+            UnicodeDecodeError, json.JSONDecodeError, OSError, cv2.error,
+            ValidationError) as exc:
         raise PackageError("Invalid or damaged device ZIP package") from exc
 
 
