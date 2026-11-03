@@ -196,7 +196,7 @@ def read_device_package(file_path: str) -> tuple[AppConfig, dict[str, bytes], di
                 # Verify PNG dimensions before decoding; compressed images can
                 # otherwise allocate far more RAM than their ZIP entry size.
                 cal = config.calibrations.get(stage)
-                if (not data.startswith(b"\\x89PNG\\r\\n\\x1a\\n") or
+                if (data[:8] != bytes((137, 80, 78, 71, 13, 10, 26, 10)) or
                         len(data) < 24 or cal is None):
                     raise PackageError("Invalid embedded PNG reference")
                 image_width, image_height = struct.unpack(">II", data[16:24])
