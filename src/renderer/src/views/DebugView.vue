@@ -38,6 +38,7 @@ const videoMeta=ref<VideoMetadata|null>(null)
 const metadataBusy=ref(false)
 const playbackBusy=ref(false)
 const playbackState=ref<PlaybackState['state']>('IDLE')
+const wantsToPlay=ref(true)
 const isScrubbing=ref(false)
 const seekTarget=ref<number|null>(null)
 let seekStartRevision=-1
@@ -78,7 +79,7 @@ const calib=computed(()=>draft.value?.calibrations[stage.value])
 const detector=computed(()=>draft.value?.detector)
 const isVideoFile=computed(()=>draft.value?.source.kind==='file')
 const canPreview=computed(()=>isVideoFile.value && !!draft.value?.source.address && !!videoMeta.value)
-const isPlaying=computed(()=>playbackState.value==='PLAYING'||playbackState.value==='SEEKING')
+const isPlaying=computed(()=>playbackState.value==='PLAYING'||(playbackState.value==='SEEKING'&&wantsToPlay.value))
 const isAuto=computed(()=>draft.value?.stage_mode==='auto')
 const referenceCount=(key:string):number=>draft.value?.position_references[key]?.length ?? 0
 const autoRoiReady=computed(()=>{
@@ -153,6 +154,8 @@ async function pollPlayback():Promise<void>{
   const result=await request<PlaybackState>('/api/playback/state?after_revision='+previewRevision)
   if(!active||!canPreview.value)return
   playbackState.value=result.state
+  if(result.state==='PLAYING')wantsToPlay.value=true
+  if(result.state==='PAUSED'||result.state==='COMPLETED')wantsToPlay.value=false
   previewStatus.value=result.status
   previewScore.value=result.s_water
   previewHistory.value=result.history
@@ -206,6 +209,7 @@ async function stopAutoTest():Promise<void>{
 async function startPlayback(index:number):Promise<void>{
  if(!canPreview.value)return
  playbackBusy.value=true
+ wantsToPlay.value=true
  previewRevision=-1
  previewImage.value=''
  error.value=''
@@ -344,9 +348,11 @@ async function togglePlayback():Promise<void>{
  if(playbackBusy.value||!canPreview.value)return
  playbackBusy.value=true
  try{
-  const endpoint=isPlaying.value?'/api/playback/pause':'/api/playback/resume'
+  const playing=isPlaying.value
+  const endpoint=playing?'/api/playback/pause':'/api/playback/resume'
   const result=await request<PlaybackState>(endpoint,'POST')
   playbackState.value=result.state
+  wantsToPlay.value=!playing
  }catch(e){error.value=String(e)}
  finally{playbackBusy.value=false}
 }
@@ -451,7 +457,7 @@ onBeforeUnmount(()=>{
      <p v-if="seekTarget!==null" class="hint">正在跳转到第 {{seekTarget}} 帧，保持原来的播放或暂停状态…</p>
      <div class="timeline-bottom">
       <div class="timeline-step">
-       <el-button type="primary" size="small" :disabled="!videoMeta || playbackBusy" @click="togglePlayback">{{isPlaying?'Ⅱ 暂停':'▶ 播放'}}</el-button>
+       <el-button type="primary" size="small" :disabled="!videoMeta || playbackBusy || seekTarget!==null" @click="togglePlayback">{{isPlaying?'Ⅱ 暂停':'▶ 播放'}}</el-button>
        <el-button size="small" :disabled="!videoMeta" @click="jumpToFrame(0)">开头</el-button>
        <el-button size="small" :disabled="!videoMeta" @click="stepFrame(-1)">◀ 上一帧</el-button>
        <el-button size="small" :disabled="!videoMeta" @click="stepFrame(1)">下一帧 ▶</el-button>
@@ -477,7 +483,7 @@ onBeforeUnmount(()=>{
       </div>
       <div class="toolbar">
         <el-button type="primary" size="small" :loading="capturingReference"
-          :disabled="!canPreview || isPlaying || capturingReference"
+          :disabled="!canPreview || isPlaying || seekTarget!==null || capturingReference"
           @click="captureReference">将当前帧添加到 {{stage}} 参考图库</el-button>
         <el-button size="small" :disabled="referenceCount(stage)===0"
           @click="removeLastReference">移除 {{stage}} 最后一张</el-button>
