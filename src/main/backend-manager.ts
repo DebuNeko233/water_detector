@@ -5,6 +5,7 @@ import path from 'node:path'
 import { setTimeout as pause } from 'node:timers/promises'
 import { app } from 'electron'
 import type { BackendStatus } from '../shared/bridge'
+import { validateApiPath } from './api-path.mjs'
 
 // 就绪文件由 Python 原子写入；pid/session_id 防止误连到其他本机服务。
 interface ReadyMessage { port: number; pid: number; session_id: string }
@@ -207,9 +208,7 @@ export class BackendManager {
 
   async request(method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
     // Renderer 提供的路径必须在白名单范围内，避免借主进程发任意本机请求。
-    if (!/^\/api\/[a-zA-Z0-9/_-]+$/.test(apiPath) || apiPath.includes('..')) {
-      throw new Error('Invalid API path')
-    }
+    validateApiPath(apiPath, method)
     const json = body === undefined ? undefined : JSON.stringify(body)
     if (json && json.length > 65_536) throw new Error('Request too large')
     const response = await fetch(this.baseUrl + apiPath, {
