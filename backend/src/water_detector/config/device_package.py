@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import tempfile
 import uuid
 import zipfile
@@ -192,6 +193,17 @@ def read_device_package(file_path: str) -> tuple[AppConfig, dict[str, bytes], di
                 if hashlib.sha256(data).hexdigest() != checksums[name]:
                     raise PackageError("Reference image checksum mismatch")
                 stage = REFERENCE_NAME.fullmatch(name).group(1)
+                # Verify PNG dimensions before decoding; compressed images can
+                # otherwise allocate far more RAM than their ZIP entry size.
+                cal = config.calibrations.get(stage)
+                if (not data.startswith(b"\\x89PNG\\r\\n\\x1a\\n") or
+                        len(data) < 24 or cal is None):
+                    raise PackageError("Invalid embedded PNG reference")
+                image_width, image_height = struct.unpack(">II", data[16:24])
+                if ((image_width, image_height) !=
+                        (cal.reference_width, cal.reference_height) or
+                        image_width * image_height > 32_000_000):
+                    raise PackageError("Unsafe or mismatched PNG dimensions")
                 assets[name] = _image_png(data, stage, config)
             summary = _summary(config, {
                 stage: len(config.position_references.get(stage, [])) for stage in STAGES
