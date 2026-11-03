@@ -28,6 +28,8 @@ export interface DesktopBridge {
   }
   system: {
     selectFile(): Promise<string | null>
+    openDevicePackage(): Promise<string | null>
+    saveDevicePackage(): Promise<string | null>
     openLogs(target?: LogTarget): Promise<void>
     closeWindow(): Promise<void>
   }
