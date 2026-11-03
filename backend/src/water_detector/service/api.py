@@ -13,6 +13,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from water_detector.config.device_package import (
+    PackageError, export_device_package, import_device_package, preview_device_package
+)
 from water_detector.config.manager import ConfigManager
 from water_detector.config.schema import AppConfig, Calibration, DetectorConfig, SourceConfig
 from water_detector.camera.source import open_source
@@ -31,6 +34,10 @@ class PreviewRequest(BaseModel):
     calibration: Calibration
     detector: DetectorConfig
     frame_index: int = Field(0, ge=0)
+
+
+class DevicePackagePath(BaseModel):
+    path: str = Field(min_length=5, max_length=4096)
 
 
 class PlaybackSeekRequest(BaseModel):
@@ -110,6 +117,32 @@ def create_app(manager: ConfigManager | None = None, shutdown: ShutdownControlle
         if monitor.snapshot()["state"] in ("RUNNING", "STARTING"):
             raise HTTPException(409, "Stop the monitoring task before committing configuration")
         return manager.save(config)
+
+    @app.post("/api/device-package/export")
+    def device_package_export(req: DevicePackagePath):
+        # Export the COMMITTED configuration, not an unsaved UI draft.
+        try:
+            return export_device_package(manager.active(), req.path)
+        except (PackageError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/device-package/preview")
+    def device_package_preview(req: DevicePackagePath):
+        try:
+            return preview_device_package(req.path)
+        except (PackageError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/device-package/import")
+    def device_package_import(req: DevicePackagePath):
+        # Always validate/re-read the archive before importing and committing.
+        # Never replace a live monitoring task's calibration.
+        if monitor.snapshot()["state"] in ("RUNNING", "STARTING"):
+            raise HTTPException(409, "Stop monitoring before importing a device profile")
+        try:
+            return import_device_package(manager, req.path)
+        except (PackageError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.put("/api/calibration/{stage}", response_model=AppConfig)
     def calibration_save(stage: str, calibration: Calibration):
