@@ -26,6 +26,8 @@ const desktop: DesktopBridge = {
   },
   system: {
     selectFile: () => ipcRenderer.invoke('system:select-file'),
+    openDevicePackage: () => ipcRenderer.invoke('system:open-device-package'),
+    saveDevicePackage: () => ipcRenderer.invoke('system:save-device-package'),
     openLogs: (target) => ipcRenderer.invoke('system:open-logs', target),
     closeWindow: () => ipcRenderer.invoke('system:close-window'),
   },
