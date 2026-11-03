@@ -10,7 +10,7 @@ export interface DetectorConfig {
 export interface Calibration { cx:number; cy:number; radius:number; reference_width:number; reference_height:number }
 export interface SourceConfig {kind:'file'|'usb'|'rtsp'|'industrial'; address:string; device_index:number}
 export interface AppConfig {
-  version:number; detector:DetectorConfig; calibrations:Record<string,Calibration>
+  version:number; device_name:string; detector:DetectorConfig; calibrations:Record<string,Calibration>
   source:SourceConfig; stage_mode:'single'|'auto'; selected_stage:'P1'|'P2'|'P3'
   position_references:Record<string,string[]>
 }
