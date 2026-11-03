@@ -111,7 +111,9 @@ class FilePlayback:
                 raise ValueError("Frame index must not be negative")
             self._pending_seek = frame_index
             self._generation += 1
-            self._paused = False  # Seeking always resumes playback.
+            # Seeking keeps the operator's prior playback intent: paused
+            # stays paused after rendering the target, playing keeps playing.
+            # Do not force _paused=False here.
             self._state["state"] = "SEEKING"
             self._condition.notify_all()
             return self.snapshot()
