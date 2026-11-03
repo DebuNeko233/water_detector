@@ -323,7 +323,7 @@ function jumpToFrame(value:number):void{
  playbackBusy.value=true
  void request<PlaybackState>('/api/playback/seek','POST',{frame_index:target})
   .then(data=>{playbackState.value=data.state})
-  .catch(()=>startPlayback(target))
+  .catch(e=>{error.value='视频跳转失败：'+String(e)})
   .finally(()=>{playbackBusy.value=false})
 }
 function onSeekCommit(value:number|number[]):void{
@@ -404,12 +404,25 @@ onBeforeUnmount(()=>{
 <template>
  <div class="debug-grid" v-if="draft&&detector&&calib">
   <div class="debug-left">
-   <section class="panel"><div class="panel-title">视频播放与算法测试</div><div class="toolbar"><div class="stage-tabs"><button v-for="s in (['P1','P2','P3'] as const)" :key="s" :class="{active:stage===s}" @click="selectStage(s)">{{s}}</button></div><el-switch v-model="showCalibrationEditor" active-text="显示手动标定层" inactive-text="隐藏手动标定层"
-      aria-label="显示或隐藏所有手动标定圆环和拖动手柄"/>
-    <el-switch v-model="showAlgorithmRoi" active-text="显示算法 ROI" inactive-text="只看异常区域"
-      aria-label="显示或隐藏算法实际使用的 ROI 边界" @change="toggleAlgorithmRoi"/>
-    <el-switch v-model="showNozzleMask" active-text="显示喷头过滤区域" inactive-text="隐藏喷头遮罩"
-      aria-label="显示或隐藏被排除的动态喷头像素" @change="toggleAlgorithmRoi"/><el-button @click="chooseVideo">选择视频</el-button></div>
+   <section class="panel">
+    <div class="debug-panel-heading">
+      <div><div class="panel-title">① 视频预览与播放</div><p class="hint">先选视频 → 播放或暂停并定位目标帧 → 标定和采集参考截图</p></div>
+      <el-button type="primary" plain @click="chooseVideo">选择视频文件</el-button>
+    </div>
+    <div class="debug-stage-control">
+      <span class="muted">正在编辑的工位</span>
+      <div class="stage-tabs"><button v-for="s in (['P1','P2','P3'] as const)" :key="s" :class="{active:stage===s}" @click="selectStage(s)">{{s}}</button></div>
+      <span class="hint">只影响标定和截图归属，自动测试仍自行选择工位</span>
+    </div>
+    <div class="debug-overlay-options">
+      <span class="muted">画面叠加</span>
+      <el-switch v-model="showCalibrationEditor" active-text="手动标定图形" inactive-text="隐藏标定图形"
+        aria-label="显示或隐藏所有手动标定圆环和拖动手柄"/>
+      <el-switch v-model="showAlgorithmRoi" active-text="实际算法 ROI" inactive-text="隐藏算法 ROI"
+        aria-label="显示或隐藏算法实际使用的 ROI 边界" @change="toggleAlgorithmRoi"/>
+      <el-switch v-model="showNozzleMask" active-text="喷头过滤区" inactive-text="隐藏喷头遮罩"
+        aria-label="显示或隐藏被排除的动态喷头像素" @change="toggleAlgorithmRoi"/>
+    </div>
     <svg ref="svg" class="roi-view" :viewBox="`0 0 ${videoMeta?.width ?? calib.reference_width} ${videoMeta?.height ?? calib.reference_height}`" preserveAspectRatio="xMidYMid meet" @pointermove="move" @pointerup="up" @pointercancel="up">
       <image v-if="previewImage" :href="previewImage" x="0" y="0" :width="videoMeta?.width ?? calib.reference_width" :height="videoMeta?.height ?? calib.reference_height" preserveAspectRatio="none"/>
       <circle v-if="showCalibrationEditor" :cx="calib.cx" :cy="calib.cy" :r="calib.radius*detector.outer_radius_ratio" fill="none" stroke="#45e0a2" :stroke-width="Math.max(1.5,calib.reference_width/360)"/>
@@ -417,10 +430,35 @@ onBeforeUnmount(()=>{
       <circle v-if="showCalibrationEditor" :cx="calib.cx" :cy="calib.cy" r="10" fill="#408def" stroke="#fff" stroke-width="2" style="cursor:move" @pointerdown="down($event,'center')"/>
       <circle v-if="showCalibrationEditor" :cx="calib.cx+calib.radius" :cy="calib.cy" r="10" fill="#2acb7f" stroke="#fff" stroke-width="2" style="cursor:ew-resize" @pointerdown="down($event,'radius')"/>
     </svg>
-    <p class="hint">关闭「手动标定层」可隐藏全部交互圆环和手柄；还可单独关闭「算法 ROI」边界，只看 Python 识别出的水流异常像素。</p>
+    <div class="debug-live-result"><span>识别工位 <strong>{{recognizedStage}}</strong></span><span>状态 <strong>{{previewStatus}}</strong></span><span>S_water <strong>{{previewScore==null?'—':previewScore.toFixed(4)}}</strong></span><el-tag :type="dirty?'warning':'info'">{{dirty?'未保存草稿':'已保存配置'}}</el-tag></div>
+    <div v-if="isVideoFile" class="video-timeline">
+     <div class="timeline-top">
+      <div><strong>视频进度</strong><span class="muted"> · {{videoMeta ? `${videoMeta.frame_count} 帧 · ${videoMeta.fps.toFixed(2)} FPS` : '正在读取信息'}}</span></div>
+      <div class="timeline-time">{{currentTime}} <span>/ {{totalTime}}</span></div>
+     </div>
+     <el-slider v-model="seekFrame" :min="0" :max="maxFrame" :step="1" :disabled="!videoMeta || metadataBusy"
+        :format-tooltip="sliderTooltip" aria-label="视频进度，跳转后保持当前播放或暂停状态" @input="isScrubbing=true" @change="onSeekCommit"/>
+     <div class="timeline-bottom">
+      <div class="timeline-step">
+       <el-button type="primary" size="small" :disabled="!videoMeta || playbackBusy" @click="togglePlayback">{{isPlaying?'Ⅱ 暂停':'▶ 播放'}}</el-button>
+       <el-button size="small" :disabled="!videoMeta" @click="jumpToFrame(0)">开头</el-button>
+       <el-button size="small" :disabled="!videoMeta" @click="stepFrame(-1)">◀ 上一帧</el-button>
+       <el-button size="small" :disabled="!videoMeta" @click="stepFrame(1)">下一帧 ▶</el-button>
+       <el-button size="small" :disabled="!videoMeta" @click="jumpToFrame(maxFrame)">结尾</el-button>
+      </div>
+      <div class="timeline-frame"><span class="muted">跳转到第</span>
+       <el-input-number v-model="frameIndex" size="small" :min="0" :max="maxFrame" :step="1"
+        :disabled="!videoMeta" @change="jumpToFrame(frameIndex)"/>
+       <span class="muted">/ {{maxFrame}}</span>
+      </div>
+     </div>
+     <p class="hint">暂停时拖动或逐帧跳转仍保持暂停；播放时跳转继续播放。修改参数会在当前帧重算，不改变播放状态。</p>
+     <div v-if="resolutionMismatch" class="toolbar" style="margin-top:8px"><el-alert title="当前标定的分辨率与视频不匹配" type="warning" :closable="false"/><el-button size="small" @click="adaptCalibrationToVideo">按当前视频尺寸缩放 ROI 后微调</el-button></div>
+    </div>
+    <div v-else class="hint">当前是实时视频源，只有本地视频文件支持拖动跳转。</div>
     <div class="debug-position-panel">
       <div class="toolbar">
-        <strong>参考截图对比 · 自动选择 ROI</strong>
+        <strong>② 工位识别与参考截图</strong>
         <el-radio-group v-model="draft.stage_mode" size="small" @change="onModeChange">
           <el-radio-button value="single">手动指定</el-radio-button>
           <el-radio-button value="auto">截图对比 P1/P2/P3</el-radio-button>
@@ -451,34 +489,9 @@ onBeforeUnmount(()=>{
         type="warning" :closable="false" show-icon />
       <p class="hint">在三个位置分别暂停并采集不同时间、喷头位置或水流状态的截图。自动模式将当前画面与每个工位的全部参考图比较，选择相似度最高且与第二名有明显差距的 ROI；相似度过低或无法区分时显示 UNKNOWN。参考图片先加入临时草稿，点击「保存为正式参数」后才能用于正式监测。</p>
     </div>
-    <div v-if="isVideoFile" class="video-timeline">
-     <div class="timeline-top">
-      <div><strong>视频进度</strong><span class="muted"> · {{videoMeta ? `${videoMeta.frame_count} 帧 · ${videoMeta.fps.toFixed(2)} FPS` : '正在读取信息'}}</span></div>
-      <div class="timeline-time">{{currentTime}} <span>/ {{totalTime}}</span></div>
-     </div>
-     <el-slider v-model="seekFrame" :min="0" :max="maxFrame" :step="1" :disabled="!videoMeta || metadataBusy"
-       :format-tooltip="sliderTooltip" aria-label="视频进度，松开后从当前位置继续播放" @input="isScrubbing=true" @change="onSeekCommit"/>
-     <div class="timeline-bottom">
-      <div class="timeline-step">
-       <el-button type="primary" size="small" :disabled="!videoMeta || playbackBusy" @click="togglePlayback">{{isPlaying?'Ⅱ 暂停':'▶ 播放'}}</el-button>
-       <el-button size="small" :disabled="!videoMeta" @click="jumpToFrame(0)">开头</el-button>
-       <el-button size="small" :disabled="!videoMeta" @click="stepFrame(-1)">◀ 上一帧</el-button>
-       <el-button size="small" :disabled="!videoMeta" @click="stepFrame(1)">下一帧 ▶</el-button>
-       <el-button size="small" :disabled="!videoMeta" @click="jumpToFrame(maxFrame)">结尾</el-button>
-      </div>
-      <div class="timeline-frame"><span class="muted">帧号</span>
-       <el-input-number v-model="frameIndex" size="small" :min="0" :max="maxFrame" :step="1"
-        :disabled="!videoMeta" @change="jumpToFrame(frameIndex)"/>
-       <span class="muted">/ {{maxFrame}}</span>
-      </div>
-     </div>
-     <p class="hint">拖动松开后自动继续播放；修改参数或标定 ROI 后自动重算当前帧的 S_water。暂停时调参不会自动恢复播放。</p>
-     <div v-if="resolutionMismatch" class="toolbar" style="margin-top:8px"><el-alert title="当前标定的分辨率与视频不匹配" type="warning" :closable="false"/><el-button size="small" @click="adaptCalibrationToVideo">按当前视频尺寸缩放 ROI 后微调</el-button></div>
-    </div>
-    <div v-else class="hint">当前是实时视频源，只有本地视频文件支持拖动跳转。</div>
     <section class="debug-auto-test">
       <div class="toolbar">
-        <strong>全视频自动算法测试</strong>
+        <strong>③ 全视频自动算法测试</strong>
         <el-button size="small" type="primary"
           :disabled="!canPreview || autoTestBusy || autoReport?.state==='RUNNING' || autoReport?.state==='STARTING'"
           :loading="autoTestBusy" @click="startAutoTest">从头自动测试整段视频</el-button>
@@ -505,18 +518,18 @@ onBeforeUnmount(()=>{
    <section class="panel"><div class="panel-title">S_water history · 参数草稿预览</div><div class="muted">{{previewStatus}} · 当前帧 S_water = {{previewScore==null?'—':previewScore.toFixed(4)}}</div><SWaterChart :values="previewHistory" :threshold="detector.s_water_threshold"/></section>
   </div>
   <div class="debug-right">
-   <section class="panel"><div class="panel-title">当前工位标定 {{stage}}</div>
+   <section class="panel"><div class="panel-title">④ {{stage}} 圆形 ROI 标定</div><p class="hint">通过画面手柄或输入坐标微调；修改会自动触发当前视频位置的算法预览。</p>
     <div class="form-line"><span>圆心 X</span><el-input-number v-model="calib.cx" :min="0" :max="calib.reference_width" @change="schedulePreview"/></div>
     <div class="form-line"><span>圆心 Y</span><el-input-number v-model="calib.cy" :min="0" :max="calib.reference_height" @change="schedulePreview"/></div>
     <div class="form-line"><span>半径 R</span><el-input-number v-model="calib.radius" :min="11" @change="schedulePreview"/></div>
    </section>
-   <section class="panel"><div class="panel-title">水流判定参数（继承 main.py）</div>
+   <section class="panel"><div class="panel-title">⑤ 水流判定参数</div><p class="hint">改动实时用于调试，确认效果后再保存为正式配置。</p>
     <div class="form-line"><span>动态喷头过滤</span><el-switch v-model="detector.nozzle_filter_enabled" @change="schedulePreview"/></div>
     <div v-for="item in ([['inner_radius_ratio','内半径比例'],['outer_radius_ratio','外半径比例'],['diff_threshold','帧差阈值'],['history_seconds','驻留窗口 / s'],['persistence_threshold','像素驻留阈值'],['s_water_threshold','S_water 阈值'],['ng_hold_seconds','NG 持续时间 / s'],['recover_hold_seconds','恢复时间 / s'],['sector_count','扇区数量'],['sector_threshold','扇区显示阈值'],['blur_ksize','高斯核大小']] as const)" :key="item[0]" class="form-line">
       <span>{{item[1]}}</span><el-input-number v-model="detector[item[0]]" :step="['history_seconds','persistence_threshold','s_water_threshold','ng_hold_seconds','recover_hold_seconds','sector_threshold','inner_radius_ratio','outer_radius_ratio'].includes(item[0])?0.01:1" :precision="['diff_threshold','sector_count','blur_ksize'].includes(item[0])?0:3" @change="schedulePreview"/>
     </div>
-    <div class="footer-actions"><el-button @click="discardChanges">放弃修改</el-button><el-button type="primary" :loading="saving" :disabled="!dirty || saving" @click="save">保存为正式参数</el-button></div>
-   </section>
+    </section>
+   <div class="debug-sticky-actions"><el-tag :type="dirty?'warning':'success'">{{dirty?'参数有未保存修改':'已保存'}}</el-tag><el-button @click="discardChanges">放弃修改</el-button><el-button type="primary" :loading="saving" :disabled="!dirty || saving" @click="save">保存为正式参数</el-button></div>
   </div>
  </div>
  <el-empty v-else description="等待后端加载配置"/>
