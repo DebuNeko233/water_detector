@@ -7,7 +7,7 @@ const file = path => readFileSync(new URL('../../' + path, import.meta.url), 'ut
 test('file playback and live tuning live only on the calibration and debug page', () => {
   const debug = file('src/renderer/src/views/DebugView.vue')
   const monitor = file('src/renderer/src/views/MonitorView.vue')
-  assert.match(debug, /视频播放与算法测试/)
+  assert.match(debug, /视频预览与播放/)
   assert.match(debug, /\/api\/playback\/start/)
   assert.match(debug, /\/api\/playback\/seek/)
   assert.match(debug, /\/api\/playback\/update/)
@@ -23,6 +23,8 @@ test('file playback and live tuning live only on the calibration and debug page'
   assert.doesNotMatch(debug, /wafer_center/)
   assert.match(debug, /value="auto"/)
   assert.match(debug, /v-model="seekFrame"/)
+  assert.match(debug, /暂停时拖动或逐帧跳转仍保持暂停/)
+  assert.match(debug, /② 工位识别与参考截图/)
   assert.doesNotMatch(monitor, /\/api\/playback\//)
   assert.doesNotMatch(monitor, /monitor-timeline/)
 })
