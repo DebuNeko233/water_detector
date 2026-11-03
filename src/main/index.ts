@@ -14,6 +14,8 @@ const mainDirectory = path.dirname(fileURLToPath(import.meta.url))
 let mainWindow: BrowserWindow | null = null
 let closing = false
 let allowQuit = false
+const authorizedImportPackages = new Set<string>()
+const authorizedExportPackages = new Set<string>()
 
 // 仅允许一个桌面应用实例，避免重复占用配置和托管多个 Python 进程。
 if (!app.requestSingleInstanceLock()) {
@@ -82,12 +84,47 @@ function registerIpc(): void {
     if ((method !== 'GET' && method !== 'POST') || typeof apiPath !== 'string') {
       throw new Error('Invalid API request')
     }
+    if (apiPath.startsWith('/api/device-package/')) {
+      const operation = apiPath.slice('/api/device-package/'.length)
+      const data = body as { path?: unknown } | null | undefined
+      const selected = data && typeof data === 'object' ? data.path : null
+      const valid = typeof selected === 'string' &&
+        (operation === 'export'
+          ? authorizedExportPackages.has(selected)
+          : (operation === 'preview' || operation === 'import') && authorizedImportPackages.has(selected))
+      if (!valid) throw new Error('Device package path must be selected through the desktop dialog')
+    }
     return backend.request(method, apiPath, body)
   })
   ipcMain.handle('system:select-file', async (event) => {
     checkSender(event)
     const selection = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'] })
     return selection.canceled ? null : selection.filePaths[0]
+  })
+  ipcMain.handle('system:open-device-package', async (event) => {
+    checkSender(event)
+    const selection = await dialog.showOpenDialog(mainWindow!, {
+      title: '选择设备配置包',
+      properties: ['openFile'],
+      filters: [{ name: '设备配置 ZIP', extensions: ['zip'] }],
+    })
+    if (selection.canceled || !selection.filePaths.length) return null
+    const chosen = selection.filePaths[0]
+    authorizedImportPackages.add(chosen)
+    return chosen
+  })
+  ipcMain.handle('system:save-device-package', async (event) => {
+    checkSender(event)
+    const selection = await dialog.showSaveDialog(mainWindow!, {
+      title: '导出设备配置包',
+      defaultPath: 'wafer-device-profile.zip',
+      filters: [{ name: '设备配置 ZIP', extensions: ['zip'] }],
+    })
+    if (selection.canceled || !selection.filePath) return null
+    const chosen = selection.filePath.toLowerCase().endsWith('.zip')
+      ? selection.filePath : selection.filePath + '.zip'
+    authorizedExportPackages.add(chosen)
+    return chosen
   })
   // 日志内容也来自 Renderer，必须校验级别、模块名、长度和控制字符。
   ipcMain.handle('logging:write', (event, level: unknown, source: unknown, message: unknown) => {
