@@ -39,6 +39,9 @@ const metadataBusy=ref(false)
 const playbackBusy=ref(false)
 const playbackState=ref<PlaybackState['state']>('IDLE')
 const isScrubbing=ref(false)
+const seekTarget=ref<number|null>(null)
+let seekStartRevision=-1
+let seekAcknowledged=false
 const showCalibrationEditor=ref(false)
 const showAlgorithmRoi=ref(true)
 const showNozzleMask=ref(false)
@@ -164,7 +167,11 @@ async function pollPlayback():Promise<void>{
   }
   if(result.reason)error.value=result.reason
   else if(!metadataBusy.value)error.value=''
-  if(!isScrubbing.value&&result.frame_index>=0){
+  if(seekTarget.value!==null && seekAcknowledged &&
+     result.state!=='SEEKING' && result.revision>seekStartRevision){
+   seekTarget.value=null
+  }
+  if(!isScrubbing.value&&seekTarget.value===null&&result.frame_index>=0){
    frameIndex.value=clampFrame(result.frame_index)
    seekFrame.value=frameIndex.value
   }
@@ -320,10 +327,13 @@ function jumpToFrame(value:number):void{
  seekFrame.value=target
  if(timer){clearTimeout(timer);timer=null}
  isScrubbing.value=false
+ seekTarget.value=target
+ seekStartRevision=previewRevision
+ seekAcknowledged=false
  playbackBusy.value=true
  void request<PlaybackState>('/api/playback/seek','POST',{frame_index:target})
-  .then(data=>{playbackState.value=data.state})
-  .catch(e=>{error.value='视频跳转失败：'+String(e)})
+  .then(data=>{seekAcknowledged=true;playbackState.value=data.state})
+  .catch(e=>{seekTarget.value=null;error.value='视频跳转失败：'+String(e)})
   .finally(()=>{playbackBusy.value=false})
 }
 function onSeekCommit(value:number|number[]):void{
@@ -438,6 +448,7 @@ onBeforeUnmount(()=>{
      </div>
      <el-slider v-model="seekFrame" :min="0" :max="maxFrame" :step="1" :disabled="!videoMeta || metadataBusy"
         :format-tooltip="sliderTooltip" aria-label="视频进度，跳转后保持当前播放或暂停状态" @input="isScrubbing=true" @change="onSeekCommit"/>
+     <p v-if="seekTarget!==null" class="hint">正在跳转到第 {{seekTarget}} 帧，保持原来的播放或暂停状态…</p>
      <div class="timeline-bottom">
       <div class="timeline-step">
        <el-button type="primary" size="small" :disabled="!videoMeta || playbackBusy" @click="togglePlayback">{{isPlaying?'Ⅱ 暂停':'▶ 播放'}}</el-button>
