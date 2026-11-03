@@ -45,6 +45,7 @@ class SourceConfig(BaseModel):
 
 class AppConfig(BaseModel):
     version: int = 1
+    device_name: str = Field("未命名设备", min_length=1, max_length=80)
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     calibrations: dict[str, Calibration] = Field(default_factory=dict)
     source: SourceConfig = Field(default_factory=SourceConfig)
